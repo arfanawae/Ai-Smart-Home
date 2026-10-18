@@ -10,7 +10,7 @@ from .assistant import Assistant
 from .config import Settings, load_settings
 from .devices.drivers.mock import FAILURE_MODES, MockDriver
 from .devices.service import DeviceService
-from .events import STATE_LABELS_TH, AIState, AssistantReply, CommandUpdate, Event, StateChanged
+from .events import STATE_LABELS_TH, AIState, AssistantReply, CommandUpdate, Event, EventSink, StateChanged
 from .llm.base import LLMProvider
 from .quota import QuotaTracker
 from .replies import action_th
@@ -35,7 +35,7 @@ HELP = f"""{DIM}คำสั่งพิเศษ:
   /quit              ออก{RESET}"""
 
 
-def _print_event(event: Event) -> None:
+def print_event(event: Event) -> None:
     match event:
         case StateChanged(state=AIState.IDLE):
             return
@@ -58,7 +58,7 @@ def _print_event(event: Event) -> None:
             print(f"{CYAN}{BOLD}NEXUS{RESET} {DIM}({tag}){RESET} {text}")
 
 
-def _build(settings: Settings) -> tuple[Assistant, MockDriver]:
+def build_assistant(settings: Settings, emit: EventSink = print_event) -> tuple[Assistant, MockDriver]:
     driver = MockDriver()
     llm: LLMProvider | None = None
     if settings.gemini_api_key:
@@ -66,12 +66,12 @@ def _build(settings: Settings) -> tuple[Assistant, MockDriver]:
 
         llm = GeminiProvider(settings.gemini_api_key, settings.llm_model, settings.llm_timeout_s)
     quota = QuotaTracker(settings.data_dir / "llm_usage.json", settings.llm_daily_limit)
-    return Assistant(DeviceService(driver), llm, quota, _print_event), driver
+    return Assistant(DeviceService(driver), llm, quota, emit), driver
 
 
 async def chat() -> None:
     settings = load_settings()
-    assistant, driver = _build(settings)
+    assistant, driver = build_assistant(settings)
     llm = f"Gemini · {settings.llm_model}" if assistant.llm else f"{YELLOW}ยังไม่ได้ตั้งค่า (Fast path อย่างเดียว){RESET}"
     print(f"{CYAN}{BOLD}N E X U S{RESET}  {DIM}M1 · ขั้น 1.1{RESET}")
     print(f"  อุปกรณ์: {YELLOW}โหมดจำลอง (MOCK){RESET} — ยังไม่ได้เชื่อมต่ออุปกรณ์จริง")
@@ -100,7 +100,7 @@ async def chat() -> None:
                     print(f"{DIM}{assistant.quota.summary_th()}{RESET}")
                 case "status":
                     result = await assistant.devices.execute("get_device_status", {"device_id": "main_light"})
-                    _print_event(CommandUpdate(result, "manual"))
+                    print_event(CommandUpdate(result, "manual"))
                 case "mock" if arg.strip() in FAILURE_MODES:
                     driver.failure = arg.strip()  # type: ignore[assignment]
                     print(f"{YELLOW}จำลองความผิดพลาด: {driver.failure}{RESET}")

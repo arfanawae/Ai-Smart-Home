@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from .devices.models import DEVICE_NAMES_TH, CommandResult, CommandStatus
 from .language import Language
 
@@ -62,6 +64,39 @@ MESSAGES: dict[Language, dict[str, str]] = {
         "command_failed": "(System note: the command failed — the device did not change as described.)",
     },
 }
+
+# Spoken stand-ins for the bracketed notes above. A truth-critical note is never dropped from speech:
+# if the LLM said "เปิดไฟแล้ว" but nothing was sent, staying silent would make NEXUS say something false.
+_SPOKEN: dict[Language, dict[str, str]] = {
+    "th": {
+        "simulation": "นี่เป็นการจำลองนะครับ",
+        "no_command": "แต่จริง ๆ ยังไม่ได้ส่งคำสั่งไปที่อุปกรณ์นะครับ",
+        "command_failed": "แต่คำสั่งไม่สำเร็จนะครับ",
+    },
+    "en": {
+        "simulation": "This was only a simulation.",
+        "no_command": "But note that no command was actually sent.",
+        "command_failed": "But the command did not go through.",
+    },
+}
+_MARKDOWN = str.maketrans("", "", "*#`_~>")
+
+
+def to_speech(text: str) -> str:
+    """The full reply stays in the log; this is what NEXUS says out loud."""
+    spoken = text
+    for language, messages in MESSAGES.items():
+        words = _SPOKEN[language]
+        for key in ("no_command", "command_failed"):
+            spoken = spoken.replace(messages[key], f" {words[key]}")
+        if messages["simulation_tag"] in spoken:
+            already_said = "จำลอง" in spoken.replace(messages["simulation_tag"], "") or "simulat" in spoken.lower().replace(
+                messages["simulation_tag"].lower(), ""
+            )
+            spoken = spoken.replace(messages["simulation_tag"], "" if already_said else f" {words['simulation']}")
+    spoken = spoken.translate(_MARKDOWN)
+    return re.sub(r"\s+", " ", spoken).strip()
+
 
 NO_LLM = MESSAGES["th"]["no_llm"]
 QUOTA_EXHAUSTED = MESSAGES["th"]["quota"]
