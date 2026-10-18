@@ -1,0 +1,17 @@
+[project]
+name = "nexus-backend"
+version = "0.1.0"
+description = "NEXUS AI Smart Home Assistant — backend (M1 step 1.1: text chat + simulated devices)"
+requires-python = ">=3.12"
+dependencies = [
+    "google-genai>=2.31",
+    "python-dotenv>=1.0",
+    "tzdata>=2024.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
