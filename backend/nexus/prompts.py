@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from .devices.models import LightState
+from .language import Language
 
 _SYSTEM = """\
-คุณคือ NEXUS ผู้ช่วย AI ประจำบ้านอัจฉริยะ พูดภาษาไทยอย่างเป็นกันเอง สุภาพ ใช้ "ครับ" (ผู้ชาย)
+คุณคือ NEXUS ผู้ช่วย AI ประจำบ้านอัจฉริยะ เป็นกันเอง สุภาพ
+ตอบเป็นภาษาเดียวกับข้อความล่าสุดของผู้ใช้: ผู้ใช้พูดไทยให้ตอบไทยและใช้ "ครับ" (ผู้ชาย), ผู้ใช้พูดอังกฤษให้ตอบอังกฤษ
+(ระบบเสียงจะเลือกเสียงพูดตามภาษาของคำตอบ จึงห้ามปนสองภาษาในคำตอบเดียว ยกเว้นชื่อเฉพาะ)
 เวลาเอ่ยชื่อตัวเองให้เขียนว่า NEXUS เป็นภาษาอังกฤษเสมอ ไม่ต้องทับศัพท์เป็นภาษาไทย
 คำตอบจะถูกอ่านออกเสียงในอนาคต จึงตอบสั้น 1–3 ประโยค ห้ามใช้ Markdown, หัวข้อ, รายการ หรืออีโมจิ
 
@@ -30,7 +33,17 @@ _SYSTEM = """\
 """
 
 
-def build_system_prompt(light: LightState | None, simulated: bool) -> str:
+_REPLY_LANGUAGE = {
+    "th": "ภาษาที่ต้องตอบในรอบนี้: ภาษาไทย",
+    # The backend detects the language itself: flash-lite ignored "answer in the user's language" alone.
+    "en": "ภาษาที่ต้องตอบในรอบนี้: ภาษาอังกฤษ — The user wrote in English. Reply in English only.",
+}
+
+
+def build_system_prompt(light: LightState | None, simulated: bool, reply_language: Language = "th") -> str:
     mode = "โหมดจำลอง (ยังไม่ได้ต่ออุปกรณ์จริง)" if simulated else "อุปกรณ์จริง"
     state = light.describe_th() if light else "ไม่ทราบ (อ่านสถานะไม่ได้)"
-    return f"{_SYSTEM}\nโหมดอุปกรณ์: {mode}\nสถานะปัจจุบันของไฟห้องหลัก: {state}\n"
+    return (
+        f"{_SYSTEM}\nโหมดอุปกรณ์: {mode}\nสถานะปัจจุบันของไฟห้องหลัก: {state}\n"
+        f"{_REPLY_LANGUAGE[reply_language]}\n"
+    )

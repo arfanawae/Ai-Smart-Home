@@ -18,9 +18,11 @@ class ScriptedLLM:
     def __init__(self, *responses):
         self.responses = list(responses)
         self.calls = []
+        self.systems = []
 
     async def generate(self, system, messages, tools):
         self.calls.append(list(messages))
+        self.systems.append(system)
         item = self.responses.pop(0)
         if isinstance(item, Exception):
             raise item
@@ -153,3 +155,53 @@ def test_history_keeps_fast_path_context_for_llm(tmp_path):
     asyncio.run(assistant.handle("ขอบคุณนะ"))
     sent = llm.calls[0]
     assert [m.role for m in sent] == ["user", "assistant", "user"]
+
+
+# ── bilingual + claim guard cases found in the live Gemini test (2026-10-19) ──────────────
+from nexus.assistant import _claims_completion
+from nexus.language import detect_language
+from nexus.replies import MESSAGES
+
+
+def test_offer_phrased_as_question_is_not_a_claim():
+    # real Gemini reply that the first guard wrongly flagged
+    assert not _claims_completion("ไฟห้องหลักปิดอยู่ครับ ต้องการให้ NEXUS เปิดไฟแล้วปรับความสว่างลงไหมครับ")
+    assert not _claims_completion("Would you like me to turn on the light and dim it?")
+
+
+def test_real_claims_are_still_caught():
+    assert _claims_completion("เปิดไฟแล้วครับ ต้องการปรับความสว่างไหมครับ")
+    assert _claims_completion("I've turned on the main light.")
+    assert _claims_completion("Done! The light is at 50%.")
+    assert not _claims_completion("I couldn't turn on the light.")
+    assert not _claims_completion("The light is on right now.")
+
+
+def test_detect_user_language():
+    assert detect_language("It's too bright in here") == "en"
+    assert detect_language("สวัสดี NEXUS") == "th"
+    assert detect_language("30") == "th"
+
+
+def test_english_user_gets_english_instruction_and_notes(tmp_path):
+    llm = ScriptedLLM(LLMResponse("I've turned on the light for you.", []))
+    assistant, _, _ = make(llm, tmp_path)
+    reply = asyncio.run(assistant.handle("Please turn on the light")).reply
+    assert MESSAGES["en"]["no_command"] in reply
+    # the system prompt sent to Gemini asks for English this turn
+    assert "Reply in English only" in llm.systems[0]
+
+
+def test_english_system_messages_without_llm(tmp_path):
+    assistant, _, _ = make(None, tmp_path)
+    assert asyncio.run(assistant.handle("Hello there")).reply == MESSAGES["en"]["no_llm"]
+
+
+def test_english_simulation_tag(tmp_path):
+    llm = ScriptedLLM(
+        LLMResponse("", [ToolCall("c1", "turn_light_on", {"device_id": "main_light"})]),
+        LLMResponse("The main light is on now.", []),
+    )
+    assistant, _, _ = make(llm, tmp_path)
+    reply = asyncio.run(assistant.handle("Turn on the light please")).reply
+    assert reply.endswith(MESSAGES["en"]["simulation_tag"])

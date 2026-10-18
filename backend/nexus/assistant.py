@@ -14,6 +14,7 @@ from .devices.drivers.base import DeviceUnavailable
 from .devices.models import CommandResult, CommandStatus, LightState
 from .devices.service import DeviceService
 from .events import AIState, AssistantReply, CommandUpdate, EventSink, StateChanged
+from .language import Language, detect_language
 from .llm.base import ChatMessage, LLMError, LLMProvider, ToolResult
 from .prompts import build_system_prompt
 from .quota import QuotaTracker
@@ -23,7 +24,34 @@ MAX_TOOL_ROUNDS = 3
 MAX_HISTORY_TURNS = 10
 
 # "เปิดไฟแล้ว", "ปรับให้เรียบร้อย", "ปิดสำเร็จ" … — a completion claim about a device action
-_CLAIM_RE = re.compile(r"(เปิด|ปิด|ปรับ|หรี่|ตั้ง|ลด|เพิ่ม)[^\n]{0,25}(แล้ว|เรียบร้อย|สำเร็จ)")
+_CLAIM_TH = re.compile(r"(เปิด|ปิด|ปรับ|หรี่|ตั้ง|ลด|เพิ่ม)[^\n]{0,25}?(แล้ว|เรียบร้อย|สำเร็จ)")
+# English claims are first-person ("I've turned on…") so state descriptions ("the light is on") don't count
+_CLAIM_EN = re.compile(
+    r"\bI(?:'ve| have| just)?\s+(?:turned|switched|dimmed|brightened|adjusted|lowered|raised|set)\b|\b(?:done|all set)\b",
+    re.IGNORECASE,
+)
+_NEGATED_EN = re.compile(r"\b(?:not|n't|couldn't|unable|failed)\b", re.IGNORECASE)
+# Offers and questions ("ต้องการให้ NEXUS เปิดไฟแล้วปรับ…ไหมครับ", "Would you like me to…") are not claims
+_OFFER_BEFORE = ("ต้องการให้", "อยากให้", "ให้ผม", "จะให้", "would you like", "do you want", "shall i", "want me to")
+_QUESTION_MARKERS = ("ไหม", "มั้ย", "หรือเปล่า", "หรือไม่", "?")
+
+
+def _claims_completion(text: str) -> bool:
+    # "ไฟปิดอยู่แล้ว" describes the current state and "ไม่สำเร็จ" admits failure — neither is a claim
+    cleaned = text.replace("อยู่แล้ว", "").replace("ไม่สำเร็จ", "")
+    for match in _CLAIM_TH.finditer(cleaned):
+        rest_of_clause = re.split(r"\s", cleaned[match.end():], maxsplit=1)[0]  # Thai separates clauses with spaces
+        before = cleaned[max(0, match.start() - 20) : match.start()]
+        if any(q in rest_of_clause for q in _QUESTION_MARKERS) or any(o in before for o in _OFFER_BEFORE):
+            continue
+        return True
+    for sentence in re.split(r"(?<=[.!?])\s+", cleaned):
+        sentence = sentence.strip()
+        if not sentence or sentence.endswith("?") or any(o in sentence.lower() for o in _OFFER_BEFORE):
+            continue
+        if _CLAIM_EN.search(sentence) and not _NEGATED_EN.search(sentence):
+            return True
+    return False
 
 
 @dataclass
@@ -59,7 +87,7 @@ class Assistant:
         if decision.execute:
             turn = await self._fast_path(text, decision)
         else:
-            turn = await self._llm_path(text)
+            turn = await self._llm_path(text, detect_language(text))
             turn.fastpath_reason = decision.reason
         self._emit(AssistantReply(turn.reply, turn.route))
         self._finish_state(turn.commands)
@@ -91,25 +119,26 @@ class Assistant:
         return TurnResult("fastpath", reply, [result], decision.reason)
 
     # ── LLM path ─────────────────────────────────────────────────────────────
-    async def _llm_path(self, text: str) -> TurnResult:
+    async def _llm_path(self, text: str, language: Language) -> TurnResult:
+        messages = replies.MESSAGES[language]
         if self.llm is None:
             self._state(AIState.ERROR, "ยังไม่ได้ตั้งค่า Gemini")
-            return TurnResult("system", replies.NO_LLM)
+            return TurnResult("system", messages["no_llm"])
         if not self.quota.can_request():
             self._state(AIState.ERROR, "โควตาหมด")
             reset = f"{self.quota.next_reset_local():%H:%M}"
-            return TurnResult("system", replies.QUOTA_EXHAUSTED.format(reset=reset))
+            return TurnResult("system", messages["quota"].format(reset=reset))
 
         turn: list[ChatMessage] = [ChatMessage("user", text)]
         commands: list[CommandResult] = []
         try:
             for _round in range(MAX_TOOL_ROUNDS + 1):
                 self._state(AIState.THINKING)
-                system = build_system_prompt(await self._current_light(), self.devices.simulated)
+                system = build_system_prompt(await self._current_light(), self.devices.simulated, language)
                 self.quota.record()
                 response = await self.llm.generate(system, [*self._history, *turn], TOOL_SPECS)
                 if not response.tool_calls:
-                    reply = self._guard_reply(response.text, commands)
+                    reply = self._guard_reply(response.text, commands, language)
                     turn.append(ChatMessage("assistant", response.text, raw=response.raw))
                     self._commit(turn)
                     return TurnResult("llm", reply, commands)
@@ -128,10 +157,10 @@ class Assistant:
             self._state(AIState.ERROR, str(e))
             # The partial turn is dropped so history never holds an unanswered tool call.
             note = "".join(f" {replies.describe_result(c)}" for c in commands if c.tool != "get_device_status")
-            return TurnResult("system", replies.LLM_FAILED.format(reason=e.kind) + note, commands)
+            return TurnResult("system", messages["llm_failed"].format(reason=e.kind) + note, commands)
 
         self._state(AIState.ERROR, "ใช้เครื่องมือหลายรอบเกินไป")
-        return TurnResult("system", replies.TOO_MANY_STEPS, commands)
+        return TurnResult("system", messages["too_many_steps"], commands)
 
     async def _current_light(self) -> LightState | None:
         try:
@@ -140,18 +169,18 @@ class Assistant:
             return None
 
     @staticmethod
-    def _guard_reply(text: str, commands: list[CommandResult]) -> str:
+    def _guard_reply(text: str, commands: list[CommandResult], language: Language = "th") -> str:
         """Never let the LLM's wording overstate what the device actually confirmed."""
+        messages = replies.MESSAGES[language]
         text = text.strip() or "ครับ"
         changes = [c for c in commands if c.tool != "get_device_status"]
         succeeded = [c for c in changes if c.status is CommandStatus.SUCCEEDED]
-        # "ไฟปิดอยู่แล้ว" describes the current state and "ไม่สำเร็จ" admits failure — neither is a claim
-        claims_done = _CLAIM_RE.search(text.replace("อยู่แล้ว", "").replace("ไม่สำเร็จ", ""))
-        if not succeeded and claims_done:
-            note = replies.COMMAND_FAILED_NOTE if changes else replies.NO_COMMAND_NOTE
+        if not succeeded and _claims_completion(text):
+            note = messages["command_failed"] if changes else messages["no_command"]
             return f"{text}\n{note}"
-        if any(c.simulated for c in succeeded) and "จำลอง" not in text:
-            return f"{text} {replies.SIMULATION_TAG}"
+        mentions_simulation = "จำลอง" in text or "simulat" in text.lower()
+        if any(c.simulated for c in succeeded) and not mentions_simulation:
+            return f"{text} {messages['simulation_tag']}"
         return text
 
     def _commit(self, turn: list[ChatMessage]) -> None:

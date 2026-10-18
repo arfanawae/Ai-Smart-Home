@@ -1,0 +1,6 @@
+sounddevice>=0.5
+numpy>=2.0
+azure-cognitiveservices-speech>=1.52
+python-dotenv>=1.0
+vosk>=0.3.45
+webrtcvad-wheels>=2.0.14

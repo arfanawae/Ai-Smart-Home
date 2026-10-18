@@ -1,0 +1,47 @@
+"""Microphone capture and speaker playback. One format everywhere: 16 kHz, mono, 16-bit PCM."""
+
+from __future__ import annotations
+
+import wave
+from pathlib import Path
+
+import numpy as np
+import sounddevice as sd
+
+SAMPLE_RATE = 16_000
+SAMPLE_WIDTH = 2  # bytes (int16)
+
+
+def record(seconds: float, device: int | None = None) -> bytes:
+    audio = sd.rec(int(seconds * SAMPLE_RATE), samplerate=SAMPLE_RATE, channels=1, dtype="int16", device=device)
+    sd.wait()
+    return audio.tobytes()
+
+
+def play(pcm: bytes, device: int | None = None) -> None:
+    if not pcm:
+        return
+    sd.play(np.frombuffer(pcm, dtype=np.int16), samplerate=SAMPLE_RATE, device=device)
+    sd.wait()
+
+
+def peak_dbfs(pcm: bytes) -> float:
+    samples = np.frombuffer(pcm, dtype=np.int16)
+    peak = float(np.max(np.abs(samples.astype(np.int32)))) / 32768.0 if samples.size else 0.0
+    return 20 * np.log10(max(peak, 1e-9))
+
+
+def save_wav(pcm: bytes, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as f:
+        f.setnchannels(1)
+        f.setsampwidth(SAMPLE_WIDTH)
+        f.setframerate(SAMPLE_RATE)
+        f.writeframes(pcm)
+
+
+def load_wav(path: Path) -> bytes:
+    with wave.open(str(path), "rb") as f:
+        if (f.getnchannels(), f.getsampwidth(), f.getframerate()) != (1, SAMPLE_WIDTH, SAMPLE_RATE):
+            raise ValueError(f"{path} ต้องเป็น 16 kHz mono 16-bit")
+        return f.readframes(f.getnframes())

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .devices.models import DEVICE_NAMES_TH, CommandResult, CommandStatus
+from .language import Language
 
 SIMULATION_TAG = "(โหมดจำลอง — ยังไม่ได้สั่งอุปกรณ์จริง)"
 
@@ -39,12 +40,32 @@ def describe_result(result: CommandResult) -> str:
     return f"{action}ไม่สำเร็จครับ: {result.error}"
 
 
-NO_LLM = (
-    "ตอนนี้ยังไม่ได้ตั้งค่า Gemini API จึงตอบได้เฉพาะคำสั่งที่ชัดเจนครับ "
-    "เช่น \"เปิดไฟ\", \"ปิดไฟ\", \"หรี่ไฟเหลือ 30\""
-)
-QUOTA_EXHAUSTED = "ตอนนี้โควตา AI ของวันนี้หมดแล้วครับ ยังสั่งไฟด้วยคำสั่งตรง ๆ ได้ เช่น \"เปิดไฟ\" — รีเซ็ตเวลา {reset} น."
-LLM_FAILED = "ขอโทษครับ ตอนนี้ติดต่อ AI ไม่ได้ ({reason}) คำสั่งตรง ๆ เช่น \"เปิดไฟ\" ยังใช้ได้ครับ"
-TOO_MANY_STEPS = "ขอโทษครับ คำขอนี้ซับซ้อนเกินไป ลองพูดใหม่ให้สั้นลงได้ไหมครับ"
-NO_COMMAND_NOTE = "(หมายเหตุจากระบบ: ในรอบนี้ยังไม่มีการส่งคำสั่งไปยังอุปกรณ์)"
-COMMAND_FAILED_NOTE = "(หมายเหตุจากระบบ: คำสั่งในรอบนี้ไม่สำเร็จ สถานะอุปกรณ์ไม่เปลี่ยนตามที่บอก)"
+# System messages in the user's language. (The fast path only matches Thai, so describe_result stays Thai.)
+MESSAGES: dict[Language, dict[str, str]] = {
+    "th": {
+        "simulation_tag": SIMULATION_TAG,
+        "no_llm": "ตอนนี้ยังไม่ได้ตั้งค่า Gemini API จึงตอบได้เฉพาะคำสั่งที่ชัดเจนครับ "
+        "เช่น \"เปิดไฟ\", \"ปิดไฟ\", \"หรี่ไฟเหลือ 30\"",
+        "quota": "ตอนนี้โควตา AI ของวันนี้หมดแล้วครับ ยังสั่งไฟด้วยคำสั่งตรง ๆ ได้ เช่น \"เปิดไฟ\" — รีเซ็ตเวลา {reset} น.",
+        "llm_failed": "ขอโทษครับ ตอนนี้ติดต่อ AI ไม่ได้ ({reason}) คำสั่งตรง ๆ เช่น \"เปิดไฟ\" ยังใช้ได้ครับ",
+        "too_many_steps": "ขอโทษครับ คำขอนี้ซับซ้อนเกินไป ลองพูดใหม่ให้สั้นลงได้ไหมครับ",
+        "no_command": "(หมายเหตุจากระบบ: ในรอบนี้ยังไม่มีการส่งคำสั่งไปยังอุปกรณ์)",
+        "command_failed": "(หมายเหตุจากระบบ: คำสั่งในรอบนี้ไม่สำเร็จ สถานะอุปกรณ์ไม่เปลี่ยนตามที่บอก)",
+    },
+    "en": {
+        "simulation_tag": "(Simulation mode — no real device was controlled.)",
+        "no_llm": "Gemini isn't configured yet, so I can only handle simple Thai commands like \"เปิดไฟ\" right now.",
+        "quota": "My AI quota for today has run out. Simple commands like \"เปิดไฟ\" still work. It resets at {reset}.",
+        "llm_failed": "Sorry, I can't reach the AI right now ({reason}). Simple commands like \"เปิดไฟ\" still work.",
+        "too_many_steps": "Sorry, that request was too complex. Could you say it more simply?",
+        "no_command": "(System note: no command was sent to any device this turn.)",
+        "command_failed": "(System note: the command failed — the device did not change as described.)",
+    },
+}
+
+NO_LLM = MESSAGES["th"]["no_llm"]
+QUOTA_EXHAUSTED = MESSAGES["th"]["quota"]
+LLM_FAILED = MESSAGES["th"]["llm_failed"]
+TOO_MANY_STEPS = MESSAGES["th"]["too_many_steps"]
+NO_COMMAND_NOTE = MESSAGES["th"]["no_command"]
+COMMAND_FAILED_NOTE = MESSAGES["th"]["command_failed"]

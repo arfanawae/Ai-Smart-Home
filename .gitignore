@@ -11,3 +11,9 @@ __pycache__/
 # Local runtime data (usage counters, logs)
 .nexus/
 *.egg-info/
+
+# Voice test recordings (may contain private speech)
+voice/recordings/
+
+# Downloaded speech models (large, re-downloadable)
+voice/models/
