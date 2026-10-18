@@ -17,7 +17,7 @@ import time
 from collections.abc import Awaitable, Callable
 
 from nexus.assistant import Assistant
-from nexus.events import AIState, EventSink, StateChanged
+from nexus.events import AIState, EventSink, StateChanged, UserMessage
 from nexus.replies import to_speech
 
 from . import sounds
@@ -43,7 +43,6 @@ class VoiceLoop:
         emit: EventSink,
         segmenter: UtteranceSegmenter | None = None,
         window_s: float = CONVERSATION_WINDOW_S,
-        on_heard: Callable[[str, str | None], None] | None = None,
     ) -> None:
         self.assistant = assistant
         self._stt, self._tts = stt, tts
@@ -52,7 +51,6 @@ class VoiceLoop:
         self._play = play
         self._emit = emit
         self._window_s = window_s
-        self._on_heard = on_heard
         self.state = AIState.IDLE
         self.language = THAI  # language of the last thing the user said; used for canned prompts
         self._deadline = 0.0
@@ -106,8 +104,7 @@ class VoiceLoop:
 
         self.language = stt.language or THAI
         text = correct(stt.text)
-        if self._on_heard:
-            self._on_heard(text, stt.language)
+        self._emit(UserMessage(text, "voice", stt.language))
         if any(phrase in text.lower() for phrase in STOP_PHRASES):
             await self._say(sounds.load_prompt("goodbye", self.language))
             self._sleep()

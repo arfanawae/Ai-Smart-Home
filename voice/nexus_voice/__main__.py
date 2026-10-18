@@ -17,6 +17,7 @@ from nexus.config import load_settings as load_backend_settings
 from nexus.events import AIState, Event, StateChanged
 
 from . import audio_io
+from .broadcast import DEFAULT_HOST, EventBroadcaster
 from .config import VoiceSettings, load_settings
 from .loop import Player, VoiceLoop
 from .speech import ENGLISH, THAI, AzureSpeech
@@ -48,36 +49,42 @@ def show(event: Event) -> None:
         print_event(event)
 
 
-def show_assistant(event: Event) -> None:
-    # The assistant ends every turn with IDLE, but in voice mode the loop owns IDLE (it keeps listening).
-    if not (isinstance(event, StateChanged) and event.state == AIState.IDLE):
-        show(event)
-
-
-def heard(text: str, language: str | None) -> None:
-    print(f"{BOLD}คุณ 🎙{RESET} {DIM}[{language}]{RESET} {text}")
-
-
-def build(play: Player | None = None) -> tuple[VoiceLoop, AzureSpeech, VoiceSettings]:
+async def build(play: Player | None = None) -> tuple[VoiceLoop, AzureSpeech, VoiceSettings, EventBroadcaster]:
     voice = load_settings()
     if not (voice.azure_key and voice.azure_region):
         sys.exit("ยังไม่ได้ใส่ AZURE_SPEECH_KEY / AZURE_SPEECH_REGION ใน backend/.env")
     backend = load_backend_settings()
-    assistant, _driver = build_assistant(backend, emit=show_assistant)
+    broadcaster = EventBroadcaster(
+        simulated=True, llm=backend.llm_model if backend.gemini_api_key else None, languages=list(voice.stt_languages)
+    )
+
+    def emit(event: Event) -> None:
+        show(event)
+        broadcaster.publish(event)
+
+    def emit_from_assistant(event: Event) -> None:
+        # The assistant ends every turn with IDLE, but in voice mode the loop owns IDLE (it keeps listening).
+        if not (isinstance(event, StateChanged) and event.state == AIState.IDLE):
+            emit(event)
+
+    assistant, driver = build_assistant(backend, emit=emit_from_assistant)
+    broadcaster.set_device("main_light", (await driver.get_state("main_light")).to_dict())
+    await broadcaster.start()
     azure = AzureSpeech(voice.azure_key, voice.azure_region, voice.stt_languages, voice.tts_voices, voice.stt_language_mode)
 
     async def speaker(pcm: bytes) -> None:
         await asyncio.to_thread(audio_io.play, pcm, voice.output_device)
 
-    loop = VoiceLoop(assistant, azure, azure, VoskWakeWord(), play or speaker, show, on_heard=heard)
+    loop = VoiceLoop(assistant, azure, azure, VoskWakeWord(), play or speaker, emit)
     print(f"{CYAN}{BOLD}N E X U S{RESET}  {DIM}Voice · M1{RESET}")
     llm = f"Gemini · {backend.llm_model}" if assistant.llm else f"{YELLOW}ไม่มี (Fast path อย่างเดียว){RESET}"
     print(f"  อุปกรณ์: {YELLOW}โหมดจำลอง (MOCK){RESET} · LLM: {llm} · STT: {' + '.join(voice.stt_languages)}")
-    return loop, azure, voice
+    print(f"  UI feed: ws://{DEFAULT_HOST}:{broadcaster.port}")
+    return loop, azure, voice, broadcaster
 
 
 async def run_live() -> None:
-    loop, _azure, voice = build()
+    loop, _azure, voice, _broadcaster = await build()
     aio = asyncio.get_running_loop()
     frames_in: asyncio.Queue[bytes] = asyncio.Queue()
 
@@ -105,7 +112,7 @@ async def run_simulation() -> None:
     async def capture(pcm: bytes) -> None:
         spoken.append(pcm)
 
-    loop, azure, _voice = build(play=capture)
+    loop, azure, _voice, broadcaster = await build(play=capture)
     pause = b"\x00" * (audio_io.SAMPLE_RATE * audio_io.SAMPLE_WIDTH)  # 1 s
     for language, sentence in SIMULATION_SCRIPT:
         print(f"\n{DIM}── ป้อนเสียงจำลอง: [{language}] {sentence}{RESET}")
@@ -113,6 +120,7 @@ async def run_simulation() -> None:
         for frame in frames(pause + tts.pcm + pause):
             await loop.process_frame(frame)
     print(f"\n{DIM}NEXUS พูดออกไปทั้งหมด {len(spoken)} ครั้ง (ไม่ได้เล่นออกลำโพง) · สถานะสุดท้าย {loop.state.value}{RESET}")
+    await broadcaster.stop()
 
 
 def main() -> None:

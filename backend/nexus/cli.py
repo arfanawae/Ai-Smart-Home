@@ -10,7 +10,7 @@ from .assistant import Assistant
 from .config import Settings, load_settings
 from .devices.drivers.mock import FAILURE_MODES, MockDriver
 from .devices.service import DeviceService
-from .events import STATE_LABELS_TH, AIState, AssistantReply, CommandUpdate, Event, EventSink, StateChanged
+from .events import STATE_LABELS_TH, AIState, AssistantReply, CommandUpdate, Event, EventSink, StateChanged, UserMessage
 from .llm.base import LLMProvider
 from .quota import QuotaTracker
 from .replies import action_th
@@ -56,6 +56,10 @@ def print_event(event: Event) -> None:
         case AssistantReply(text=text, route=route):
             tag = {"fastpath": "fast path", "llm": "Gemini", "system": "ระบบ"}[route]
             print(f"{CYAN}{BOLD}NEXUS{RESET} {DIM}({tag}){RESET} {text}")
+        case UserMessage(text=text, source="voice", language=language):
+            print(f"{BOLD}คุณ 🎙{RESET} {DIM}[{language}]{RESET} {text}")
+        case UserMessage():
+            return  # typed text is already on screen
 
 
 def build_assistant(settings: Settings, emit: EventSink = print_event) -> tuple[Assistant, MockDriver]:

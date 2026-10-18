@@ -59,6 +59,21 @@ class CommandResult:
     def ok(self) -> bool:
         return self.status is CommandStatus.SUCCEEDED
 
+    def to_dict(self) -> dict[str, Any]:
+        """Full record for logs and the UI (the LLM gets the narrower to_tool_payload)."""
+        return {
+            "tool": self.tool,
+            "args": self.args,
+            "status": self.status.value,
+            "simulated": self.simulated,
+            "command_id": self.command_id,
+            "device_id": self.device_id,
+            "previous": self.previous.to_dict() if self.previous else None,
+            "reported": self.reported.to_dict() if self.reported else None,
+            "error": self.error,
+            "latency_ms": self.latency_ms,
+        }
+
     def to_tool_payload(self) -> dict[str, Any]:
         """What the LLM sees as the tool result. It must never be able to mistake a simulation for reality."""
         payload: dict[str, Any] = {

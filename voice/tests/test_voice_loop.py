@@ -5,7 +5,7 @@ import asyncio
 from nexus.assistant import Assistant
 from nexus.devices.drivers.mock import MockDriver
 from nexus.devices.service import DeviceService
-from nexus.events import AIState, StateChanged
+from nexus.events import AIState, StateChanged, UserMessage
 from nexus.quota import QuotaTracker
 
 from nexus_voice.loop import VoiceLoop
@@ -90,6 +90,8 @@ def test_wake_then_command_controls_the_simulated_light(tmp_path):
     assert tts.spoken == ["จำลองการเปิดไฟห้องหลักแล้วครับ ตอนนี้ไฟห้องหลักเปิด 100%"]
     seq = states(events)
     assert seq[:2] == [AIState.WAKE_DETECTED, AIState.SPEAKING]
+    # what the user said is an event too, so the web UI can show it
+    assert [e for e in events if isinstance(e, UserMessage)] == [UserMessage("เปิดไฟห้องหลัก", "voice", THAI)]
     assert AIState.TRANSCRIBING in seq and AIState.EXECUTING in seq
     assert loop.state == AIState.LISTENING  # conversation window stays open
 

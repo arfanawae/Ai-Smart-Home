@@ -6,6 +6,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Any
 
 from .devices.models import CommandResult
 
@@ -57,5 +58,26 @@ class AssistantReply:
     route: str  # "fastpath" | "llm" | "system"
 
 
-Event = StateChanged | CommandUpdate | AssistantReply
+@dataclass(frozen=True)
+class UserMessage:
+    text: str
+    source: str  # "voice" | "text"
+    language: str | None = None
+
+
+Event = StateChanged | CommandUpdate | AssistantReply | UserMessage
 EventSink = Callable[[Event], None]
+
+
+def to_dict(event: Event) -> dict[str, Any]:
+    """JSON-ready form of an event — the wire format for the WebSocket UI feed."""
+    match event:
+        case StateChanged(state=state, detail=detail):
+            return {"type": "state", "state": state.value, "label": STATE_LABELS_TH[state], "detail": detail}
+        case CommandUpdate(result=result, route=route):
+            return {"type": "command", "route": route, **result.to_dict()}
+        case AssistantReply(text=text, route=route):
+            return {"type": "reply", "text": text, "route": route}
+        case UserMessage(text=text, source=source, language=language):
+            return {"type": "user", "text": text, "source": source, "language": language}
+    raise TypeError(f"unknown event {event!r}")
