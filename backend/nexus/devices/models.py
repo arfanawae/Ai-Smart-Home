@@ -36,6 +36,16 @@ class LightState:
             "source": self.source,
         }
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> LightState:
+        return cls(
+            online=bool(data["online"]),
+            on=bool(data["on"]),
+            brightness=int(data["brightness"]),
+            updated_at=datetime.fromisoformat(data["updated_at"]),
+            source=str(data["source"]),
+        )
+
     def describe_th(self) -> str:
         if not self.online:
             return "ออฟไลน์"
@@ -54,6 +64,26 @@ class CommandResult:
     error: str | None = None
     latency_ms: int | None = None
     device_id: str | None = field(default=None)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CommandResult:
+        """Inverse of to_dict() — how results come back from the MCP server."""
+
+        def state(value: Any) -> LightState | None:
+            return LightState.from_dict(value) if value else None
+
+        return cls(
+            tool=str(data["tool"]),
+            args=dict(data.get("args") or {}),
+            status=CommandStatus(data["status"]),
+            simulated=bool(data["simulated"]),
+            command_id=data.get("command_id"),
+            previous=state(data.get("previous")),
+            reported=state(data.get("reported")),
+            error=data.get("error"),
+            latency_ms=data.get("latency_ms"),
+            device_id=data.get("device_id"),
+        )
 
     @property
     def ok(self) -> bool:

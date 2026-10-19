@@ -75,13 +75,24 @@ class Core:
             simulated=True,
             llm=backend.llm_model if backend.gemini_api_key else None,
             languages=languages,
+            devices_via=backend.device_backend,  # "mcp" | "local" — shown in the UI's system status
         )
         self.assistant: Assistant
-        self.assistant, self._driver = build_assistant(backend, emit=self.emit_from_assistant)
+        self.assistant, self.devices = build_assistant(backend, emit=self.emit_from_assistant)
 
     async def start(self) -> None:
-        self.broadcaster.set_device("main_light", (await self._driver.get_state("main_light")).to_dict())
+        try:
+            await self.devices.start()  # spawns the MCP server when DEVICE_BACKEND=mcp
+        except ConnectionError as e:
+            sys.exit(f"{e} — ลองรัน: python -m nexus_mcp (ดูข้อความผิดพลาด) หรือใช้ DEVICE_BACKEND=local")
+        state = await self.devices.get_state("main_light")
+        if state is not None:
+            self.broadcaster.set_device("main_light", state.to_dict())
         await self.broadcaster.start()
+
+    async def close(self) -> None:
+        await self.broadcaster.stop()
+        await self.devices.close()
 
     def emit(self, event: Event) -> None:
         show(event)
@@ -132,7 +143,8 @@ def banner(core: Core, mode: str, voice: VoiceSettings | None) -> None:
     print(f"{CYAN}{BOLD}N E X U S{RESET}  {DIM}{mode}{RESET}")
     llm = f"Gemini · {core.backend.llm_model}" if core.assistant.llm else f"{YELLOW}ไม่มี (Fast path อย่างเดียว){RESET}"
     stt = f" · STT: {' + '.join(voice.stt_languages)}" if voice else ""
-    print(f"  อุปกรณ์: {YELLOW}โหมดจำลอง (MOCK){RESET} · LLM: {llm}{stt}")
+    via = "MCP Server (stdio)" if core.backend.device_backend == "mcp" else "local"
+    print(f"  อุปกรณ์: {YELLOW}โหมดจำลอง (MOCK){RESET} ผ่าน {via} · LLM: {llm}{stt}")
     print(f"  หน้าเว็บ: ws://{DEFAULT_HOST}:{core.broadcaster.port}  (cd frontend && npm run dev)")
 
 
@@ -194,29 +206,35 @@ async def run_live() -> None:
         if counter % LEVEL_EVERY_FRAMES == 0:
             aio.call_soon_threadsafe(core.broadcaster.publish_level, audio_io.loudness(frame), "mic")
 
-    with sd.RawInputStream(
-        samplerate=audio_io.SAMPLE_RATE,
-        blocksize=FRAME_SAMPLES,
-        channels=1,
-        dtype="int16",
-        device=voice.input_device,
-        callback=on_audio,
-    ):
-        core.emit(StateChanged(AIState.IDLE, 'พูด "Nexus" แล้วเว้นจังหวะสั้น ๆ ก่อนสั่งงาน (Ctrl+C เพื่อออก)'))
-        spoken = loop.utterances_spoken
-        while True:
-            await loop.process_frame(await frames_in.get())
-            if loop.utterances_spoken != spoken:  # NEXUS just finished speaking: drop stale mic audio
-                spoken = loop.utterances_spoken
-                while not frames_in.empty():
-                    frames_in.get_nowait()
+    try:
+        with sd.RawInputStream(
+            samplerate=audio_io.SAMPLE_RATE,
+            blocksize=FRAME_SAMPLES,
+            channels=1,
+            dtype="int16",
+            device=voice.input_device,
+            callback=on_audio,
+        ):
+            core.emit(StateChanged(AIState.IDLE, 'พูด "Nexus" แล้วเว้นจังหวะสั้น ๆ ก่อนสั่งงาน (Ctrl+C เพื่อออก)'))
+            spoken = loop.utterances_spoken
+            while True:
+                await loop.process_frame(await frames_in.get())
+                if loop.utterances_spoken != spoken:  # NEXUS just finished speaking: drop stale mic audio
+                    spoken = loop.utterances_spoken
+                    while not frames_in.empty():
+                        frames_in.get_nowait()
+    finally:
+        await core.close()  # also stops the MCP server subprocess
 
 
 async def run_serve() -> None:
     core = await start_core([])
     banner(core, "Serve · ไม่มีระบบเสียง", None)
     core.emit(StateChanged(AIState.IDLE, "โหมด serve — พิมพ์คุยหรือกดควบคุมไฟจากหน้าเว็บ"))
-    await asyncio.Event().wait()
+    try:
+        await asyncio.Event().wait()
+    finally:
+        await core.close()
 
 
 async def run_simulation() -> None:
@@ -236,7 +254,7 @@ async def run_simulation() -> None:
             await loop.process_frame(frame)
             await asyncio.sleep(0)  # let the UI feed flush between frames
     print(f"\n{DIM}NEXUS พูดออกไปทั้งหมด {len(spoken)} ครั้ง (ไม่ได้เล่นออกลำโพง) · สถานะสุดท้าย {loop.state.value}{RESET}")
-    await core.broadcaster.stop()
+    await core.close()
 
 
 def main() -> None:

@@ -12,16 +12,14 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from . import fastpath, replies
-from .devices.drivers.base import DeviceUnavailable
 from .devices.models import CommandResult, CommandStatus, LightState
-from .devices.service import DeviceService
+from .devices.gateway import DeviceGateway
 from .events import AIState, AssistantReply, CommandUpdate, EventSink, StateChanged
 from .language import Language, detect_language
 from .llm.base import ChatMessage, LLMError, LLMProvider, LLMResponse, ToolResult, stream_reply
 from .prompts import build_system_prompt
 from .quota import QuotaTracker
 from .sentences import SentenceSplitter
-from .tools import TOOL_SPECS
 
 MAX_TOOL_ROUNDS = 3
 MAX_HISTORY_TURNS = 10
@@ -126,7 +124,7 @@ class TurnResult:
 class Assistant:
     def __init__(
         self,
-        devices: DeviceService,
+        devices: DeviceGateway,
         llm: LLMProvider | None,
         quota: QuotaTracker,
         emit: EventSink,
@@ -220,7 +218,7 @@ class Assistant:
                 system = build_system_prompt(light, self.devices.simulated, language)
                 self.quota.record()
                 response: LLMResponse | None = None
-                async for event in stream_reply(self.llm, system, [*self._history, *turn], TOOL_SPECS):
+                async for event in stream_reply(self.llm, system, [*self._history, *turn], self.devices.tools):
                     if isinstance(event, LLMResponse):
                         response = event
                     else:
@@ -262,10 +260,7 @@ class Assistant:
         return TurnResult("system", messages["too_many_steps"], commands)
 
     async def _current_light(self) -> LightState | None:
-        try:
-            return await self.devices.driver.get_state("main_light")
-        except DeviceUnavailable:
-            return None
+        return await self.devices.get_state("main_light")
 
     @staticmethod
     def _guard_reply(text: str, commands: list[CommandResult], language: Language = "th") -> str:

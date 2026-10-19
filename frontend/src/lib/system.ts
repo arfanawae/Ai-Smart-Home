@@ -47,7 +47,9 @@ export function systemRows(connection: Connection, info: Info | null, light: Lig
       tone: !light ? 'off' : light.online ? (light.source === 'mock' ? 'warn' : 'ok') : 'bad',
       value: !light ? 'ไม่ทราบสถานะ' : `${light.online ? 'ออนไลน์' : 'ออฟไลน์'}${light.source === 'mock' ? ' · จำลอง' : ''}`,
     },
-    { key: 'mcp', name: 'MCP Server', tone: 'off', value: 'ยังไม่เชื่อมต่อ', hint: 'จะเพิ่มใน M4' },
+    info?.devicesVia === 'mcp'
+      ? { key: 'mcp', name: 'MCP Server', tone: 'ok', value: 'เชื่อมต่อแล้ว · stdio', hint: 'ทุกคำสั่งไปอุปกรณ์ผ่าน MCP Server' }
+      : { key: 'mcp', name: 'MCP Server', tone: 'off', value: info?.devicesVia === 'local' ? 'ไม่ได้ใช้ (local)' : 'ไม่ทราบ' },
     { key: 'unoq', name: 'Arduino UNO Q', tone: 'off', value: 'ยังไม่เชื่อมต่อ', hint: 'จะเพิ่มใน M5' },
   ]
 }

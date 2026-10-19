@@ -12,6 +12,7 @@ model stop calling tools (that happened once already, see prompts.py).
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import sys
 from dataclasses import dataclass
 from typing import Literal
@@ -55,19 +56,20 @@ def effective(on: bool, brightness: int) -> int:
 
 
 async def run() -> None:
-    settings = load_settings()
+    # NLU is what is measured here, not transport: always in-process devices (and direct state setup).
+    settings = dataclasses.replace(load_settings(), device_backend="local")
     correct = language_ok = tested = 0
     for case in CASES:
         assert not decide(case.text).execute, f"{case.text!r} goes to the fast path, not Gemini"
-        assistant, driver = build_assistant(settings, emit=lambda _e: None)
-        await driver.apply("main_light", {"on": case.on, "brightness": case.brightness})
+        assistant, devices = build_assistant(settings, emit=lambda _e: None)
+        await devices.driver.apply(  # type: ignore[attr-defined]  # local backend: DeviceService"main_light", {"on": case.on, "brightness": case.brightness})
         before = effective(case.on, case.brightness)
         turn = await assistant.handle(case.text)
         if turn.route == "system":  # quota / network error: this case was not actually tested
             print(f"? {case.text[:34]:<36} NOT TESTED — {turn.reply[:80]}")
             continue
         tested += 1
-        state = await driver.get_state("main_light")
+        state = await devices.driver.get_state("main_light")  # type: ignore[attr-defined]
         after = effective(state.on, state.brightness)
         got: Expect = "brighter" if after > before else "dimmer" if after < before else "no_change"
         ok = got == case.expect

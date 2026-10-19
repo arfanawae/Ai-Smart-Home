@@ -76,6 +76,8 @@ export interface HelloMsg {
   simulated?: boolean
   llm?: string | null
   languages?: string[]
+  /** How the voice service reaches devices: through the MCP server, or in-process. */
+  devices_via?: 'mcp' | 'local'
   state: StateMsg
   devices: Record<string, LightState>
 }

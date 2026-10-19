@@ -785,11 +785,13 @@ flowchart LR
 | **M1** | Voice Loop (ยังไม่มี LLM) | Voice Service: Mic → Wake word → "ว่าไงครับ" → VAD → STT ไทย → TTS ไทยพูดทวนข้อความ (Echo) + Conversation window + Mute | ปลุกติด ≥ 9/10 ครั้งที่ระยะ 1–2 เมตรในห้องเงียบ; ปลุกผิด ≤ 1 ครั้ง/ชั่วโมงขณะเปิดเพลง/คุยปกติ; "ว่าไงครับ" < 500ms; STT ถูกต้องในประโยคทดสอบ 20 ประโยค ≥ 85%; AI ไม่ปลุกตัวเองขณะพูด |
 | **M2** | Web Shell + AI Core | Vite/React/TS/Tailwind, AppShell, AI Core ครบทุก state, Conversation panel — **ขับเคลื่อนด้วย state จริงจาก Voice Service ผ่าน WebSocket** | Core เปลี่ยน state ตรงกับเสียงจริงภายใน 100ms; Layout ถูกต้องที่ 360, 390, 768, 1024, 1366×768, 1440, 1920; ทุก state แยกได้ใน Grayscale; 60fps บนโน้ตบุ๊ก; reduced-motion ทำงาน |
 | **M3** | LLM Conversation | Backend + Gemini `LLMProvider` (Streaming) + บุคลิก NEXUS + ประวัติ Session + Fast path + ตัวนับโควตา + ชุดทดสอบภาษาไทย 40–50 ประโยค | ตอบเป็นภาษาไทยธรรมชาติ สั้น เหมาะกับการฟัง; เสียงแรก < 2.5s หลังพูดจบ (median); เปรียบเทียบรุ่น Flash-Lite vs Flash แล้วเลือก; จำนวน request/วันจริงถูกบันทึก; 429 ถูกจัดการตามข้อ 9.2 |
-| **M4** | MCP + Mock Device | MCP Server (5 tools) + MCP Client + Validator + MockDriver + Light Card + Activity | ชุดทดสอบเรียก tool ถูก ≥ 90% รวมคำทางอ้อมตามข้อ 8.5; นอกขอบเขตถูกปฏิเสธ 100%; **ไม่มีคำว่า "สำเร็จ" ก่อน Ack (0 ครั้ง)**; Failure injection แสดง ERROR/UNKNOWN ถูกต้อง |
+| **M4** ✅* | MCP + Mock Device | MCP Server (5 tools) + MCP Client + Validator + MockDriver + Light Card + Activity | ชุดทดสอบเรียก tool ถูก ≥ 90% รวมคำทางอ้อมตามข้อ 8.5; นอกขอบเขตถูกปฏิเสธ 100%; **ไม่มีคำว่า "สำเร็จ" ก่อน Ack (0 ครั้ง)**; Failure injection แสดง ERROR/UNKNOWN ถูกต้อง |
 | **M5** | Arduino UNO Q Integration | Controller API บน UNO Q + MCU sketch + UnoQDriver + heartbeat — ใช้ LED ทดสอบ/ไฟเส้นก่อน | สั่งด้วยเสียงแล้วอุปกรณ์จริงเปลี่ยนตาม; ถอดสาย/ปิดบอร์ด → UI เป็น DISCONNECTED/UNKNOWN ภายใน 10s; ไม่มีการรายงานสำเร็จเท็จ |
 | **M6** | Real Light | ต่อแหล่งแสงที่ผ่าน H1 + วงจรขับจริง | หรี่ได้ตามช่วงที่ทดสอบไว้โดยไม่กะพริบ; ทดสอบต่อเนื่อง 1 ชั่วโมงไม่ร้อนผิดปกติ |
 | **M7** | Mobile + Security | Mobile UI, HTTPS ใน LAN, Login, (ถ้าต้องการ) VPN สำหรับนอกบ้าน | มือถือสั่งงานด้วยการกดไมค์/พิมพ์ได้; ไม่มีพอร์ตเปิดสู่ Internet; API ไม่มี session → 401 |
 | **M8** | Polish & Demo | Activity/Settings เต็ม, PWA, ทดสอบผู้ใช้ 3–5 คน, เอกสารโครงงาน, สคริปต์สาธิต | ผู้ทดสอบสั่งงานด้วยเสียงสำเร็จโดยไม่ต้องอธิบาย ≥ 80%; ไม่มี bug ระดับ critical |
+
+> **M4 (2026-10-19):** MCP Server (`mcp_server/`, stdio, mcp SDK 2.3) + MCP Client ในระบบหลัก · ตรวจ input 2 ชั้น · progress → WAITING_FOR_DEVICE · reconnect อัตโนมัติ · integration tests 11 ข้อ (นอกขอบเขตถูกปฏิเสธ 100%, timeout ไม่อ้างสำเร็จ) · ✅* = เกณฑ์ "เรียก tool ถูก ≥ 90%" ยังต้องวัดซ้ำด้วย `backend/eval_nlu.py` เมื่อโควตา Gemini พร้อม
 
 ### 13.1 แผน M1 — Voice Loop (ละเอียด)
 

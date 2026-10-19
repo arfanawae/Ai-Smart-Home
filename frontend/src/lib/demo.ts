@@ -27,6 +27,7 @@ export function startDemo(frozen: AIState | null): () => void {
     simulated: true,
     llm: 'demo',
     languages: ['th-TH', 'en-US'],
+    devices_via: 'mcp',
     state: { type: 'state', state: frozen ?? 'IDLE', label: '', detail: '' },
     devices: { main_light: { online: true, on: true, brightness: 80, updated_at: ts, source: 'mock' } },
   })

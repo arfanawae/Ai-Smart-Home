@@ -9,6 +9,7 @@ import sys
 from .assistant import Assistant
 from .config import Settings, load_settings
 from .devices.drivers.mock import FAILURE_MODES, MockDriver
+from .devices.gateway import DeviceGateway
 from .devices.service import DeviceService
 from .events import STATE_LABELS_TH, AIState, AssistantReply, CommandUpdate, Event, EventSink, StateChanged, UserMessage
 from .llm.base import LLMProvider
@@ -62,23 +63,41 @@ def print_event(event: Event) -> None:
             return  # typed text is already on screen
 
 
-def build_assistant(settings: Settings, emit: EventSink = print_event) -> tuple[Assistant, MockDriver]:
-    driver = MockDriver()
+def build_assistant(settings: Settings, emit: EventSink = print_event) -> tuple[Assistant, DeviceGateway]:
+    """The caller must `await gateway.start()` before the first turn (it spawns the MCP server)."""
+    gateway: DeviceGateway
+    if settings.device_backend == "mcp":
+        from .devices.mcp_client import McpDevices
+
+        gateway = McpDevices()
+    else:
+        gateway = DeviceService(MockDriver())
     llm: LLMProvider | None = None
     if settings.gemini_api_key:
         from .llm.gemini import GeminiProvider
 
         llm = GeminiProvider(settings.gemini_api_key, settings.llm_model, settings.llm_timeout_s)
     quota = QuotaTracker(settings.data_dir / "llm_usage.json", settings.llm_daily_limit)
-    return Assistant(DeviceService(driver), llm, quota, emit), driver
+    return Assistant(gateway, llm, quota, emit), gateway
+
+
+async def set_mock_failure(gateway: DeviceGateway, mode: str) -> bool:
+    """/mock — works for both the in-process and the MCP device backends."""
+    if isinstance(gateway, DeviceService) and isinstance(gateway.driver, MockDriver):
+        gateway.driver.failure = mode  # type: ignore[assignment]
+        return True
+    setter = getattr(gateway, "set_mock_failure", None)
+    return bool(setter and await setter(mode))
 
 
 async def chat() -> None:
     settings = load_settings()
-    assistant, driver = build_assistant(settings)
+    assistant, devices = build_assistant(settings)
+    await devices.start()
     llm = f"Gemini · {settings.llm_model}" if assistant.llm else f"{YELLOW}ยังไม่ได้ตั้งค่า (Fast path อย่างเดียว){RESET}"
     print(f"{CYAN}{BOLD}N E X U S{RESET}  {DIM}M1 · ขั้น 1.1{RESET}")
-    print(f"  อุปกรณ์: {YELLOW}โหมดจำลอง (MOCK){RESET} — ยังไม่ได้เชื่อมต่ออุปกรณ์จริง")
+    via = "ผ่าน MCP Server (stdio)" if settings.device_backend == "mcp" else "ในโปรเซสเดียวกัน (local)"
+    print(f"  อุปกรณ์: {YELLOW}โหมดจำลอง (MOCK){RESET} — ยังไม่ได้เชื่อมต่ออุปกรณ์จริง · {via}")
     print(f"  LLM: {llm}")
     print(f"  โควตา: {assistant.quota.summary_th()}")
     print(HELP)
@@ -106,14 +125,15 @@ async def chat() -> None:
                     result = await assistant.devices.execute("get_device_status", {"device_id": "main_light"})
                     print_event(CommandUpdate(result, "manual"))
                 case "mock" if arg.strip() in FAILURE_MODES:
-                    driver.failure = arg.strip()  # type: ignore[assignment]
-                    print(f"{YELLOW}จำลองความผิดพลาด: {driver.failure}{RESET}")
+                    if await set_mock_failure(devices, arg.strip()):
+                        print(f"{YELLOW}จำลองความผิดพลาด: {arg.strip()}{RESET}")
                 case _:
                     print(f"{RED}ไม่รู้จักคำสั่ง{RESET}\n{HELP}")
             continue
         await assistant.handle(text)
         if assistant.quota.near_limit:
             print(f"{YELLOW}  ⚠ {assistant.quota.summary_th()}{RESET}")
+    await devices.close()
     print(f"{DIM}ลาก่อนครับ{RESET}")
 
 

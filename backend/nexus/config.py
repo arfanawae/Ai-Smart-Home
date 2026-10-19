@@ -19,12 +19,20 @@ class Settings:
     llm_daily_limit: int | None
     llm_timeout_s: float
     device_mode: str
+    device_backend: str  # "mcp": devices via the MCP server subprocess · "local": in-process
     data_dir: Path
 
 
 def _optional_int(raw: str | None) -> int | None:
     raw = (raw or "").strip()
     return int(raw) if raw else None
+
+
+def _device_backend() -> str:
+    backend = os.getenv("DEVICE_BACKEND", "mcp").strip() or "mcp"
+    if backend not in ("mcp", "local"):
+        raise ValueError(f"DEVICE_BACKEND={backend!r} ต้องเป็น mcp หรือ local")
+    return backend
 
 
 def load_settings() -> Settings:
@@ -38,5 +46,6 @@ def load_settings() -> Settings:
         llm_daily_limit=_optional_int(os.getenv("LLM_DAILY_LIMIT")),
         llm_timeout_s=float(os.getenv("LLM_TIMEOUT_S", "20") or 20),
         device_mode=device_mode,
+        device_backend=_device_backend(),
         data_dir=BACKEND_DIR / ".nexus",
     )

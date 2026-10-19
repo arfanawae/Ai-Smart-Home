@@ -13,7 +13,7 @@ from collections import deque
 from collections.abc import Callable
 from typing import Any
 
-from ..tools import ADJUST_FLOOR, DELTA_LIMIT, DEVICE_IDS, LEVEL_MAX, LEVEL_MIN, TOOL_NAMES
+from ..tools import ADJUST_FLOOR, DELTA_LIMIT, DEVICE_IDS, LEVEL_MAX, LEVEL_MIN, TOOL_NAMES, TOOL_SPECS, ToolSpec
 from .drivers.base import DeviceDriver, DeviceUnavailable
 from .models import CommandResult, CommandStatus, LightState
 
@@ -104,9 +104,26 @@ class DeviceService:
         self._max_per_s = max_commands_per_s
         self._recent: dict[str, deque[float]] = {}
 
+    # ── DeviceGateway (gateway.py): the in-process implementation ──────────────────────────────
     @property
     def simulated(self) -> bool:
         return self.driver.simulated
+
+    @property
+    def tools(self) -> tuple[ToolSpec, ...]:
+        return TOOL_SPECS
+
+    async def start(self) -> None:
+        """Nothing to connect to in-process."""
+
+    async def close(self) -> None:
+        pass
+
+    async def get_state(self, device_id: str) -> LightState | None:
+        try:
+            return await asyncio.wait_for(self.driver.get_state(device_id), self._timeout_s)
+        except (DeviceUnavailable, TimeoutError):
+            return None
 
     def _rate_ok(self, device_id: str) -> bool:
         now = time.monotonic()

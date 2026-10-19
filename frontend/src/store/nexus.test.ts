@@ -37,7 +37,12 @@ describe('reduce', () => {
       state: { type: 'state', state: 'LISTENING', label: '', detail: 'x' },
       devices: { main_light: light(false, 100) },
     })
-    expect(s.info).toEqual({ simulated: true, llm: 'gemini-flash-lite-latest', languages: ['th-TH', 'en-US'] })
+    expect(s.info).toEqual({
+      simulated: true,
+      llm: 'gemini-flash-lite-latest',
+      languages: ['th-TH', 'en-US'],
+      devicesVia: null,
+    })
     expect(s.ai.state).toBe('LISTENING')
     expect(s.devices.main_light.on).toBe(false)
   })

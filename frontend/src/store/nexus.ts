@@ -13,6 +13,7 @@ export interface Info {
   llm: string | null
   /** Empty in `serve` mode: no microphone / wake word running. */
   languages: string[]
+  devicesVia: 'mcp' | 'local' | null
 }
 
 export interface NexusData {
@@ -50,7 +51,12 @@ export function reduce(s: NexusData, msg: FeedMsg, now = Date.now()): NexusData 
     case 'hello':
       return {
         ...s,
-        info: { simulated: msg.simulated ?? true, llm: msg.llm ?? null, languages: msg.languages ?? [] },
+        info: {
+          simulated: msg.simulated ?? true,
+          llm: msg.llm ?? null,
+          languages: msg.languages ?? [],
+          devicesVia: msg.devices_via ?? null,
+        },
         ai: { state: msg.state.state, detail: msg.state.detail, since: now },
         devices: { ...s.devices, ...msg.devices },
         lastError: null,

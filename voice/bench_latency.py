@@ -71,7 +71,8 @@ async def run(fast_only: bool, rounds: int) -> None:
     voice = load_settings()
     backend = load_backend_settings()
     clock = Clock()
-    assistant, _driver = build_assistant(backend, emit=clock.on_event)
+    assistant, devices = build_assistant(backend, emit=clock.on_event)
+    await devices.start()  # spawns the MCP server when DEVICE_BACKEND=mcp — part of the real latency
     azure = AzureSpeech(
         voice.azure_key, voice.azure_region, voice.stt_languages, voice.tts_voices, voice.stt_language_mode,
         segmentation_silence_ms=voice.vad_end_silence_ms,
