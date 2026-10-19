@@ -7,10 +7,18 @@ Regenerate with: python voice/test_speech.py prompts
 
 from __future__ import annotations
 
+import array
+from functools import lru_cache
 from pathlib import Path
 
 from . import audio_io
+from .audio_io import SAMPLE_RATE
 from .speech import ENGLISH, THAI
+
+# Azure TTS pads its output with up to 1.2 s of silence at the end. The microphone stays muted while a
+# prompt plays, so that silence delayed listening after "Nexus" by more than a second.
+SILENCE_LEVEL = 300  # 16-bit amplitude below which a sample counts as silence
+EDGE_PAD_S = 0.05
 
 SOUNDS_DIR = Path(__file__).resolve().parents[1] / "sounds"
 
@@ -40,8 +48,18 @@ def prompt_path(name: str, language: str = THAI) -> Path:
     return SOUNDS_DIR / language.split("-")[0] / f"{name}.wav"
 
 
+def trim_silence(pcm: bytes) -> bytes:
+    samples = array.array("h", pcm[: len(pcm) // 2 * 2])
+    loud = [i for i, v in enumerate(samples) if abs(v) > SILENCE_LEVEL]
+    if not loud:
+        return pcm
+    pad = int(EDGE_PAD_S * SAMPLE_RATE)
+    return samples[max(0, loud[0] - pad) : loud[-1] + pad].tobytes()
+
+
+@lru_cache(maxsize=32)
 def load_prompt(name: str, language: str = THAI) -> bytes:
     path = prompt_path(name, language)
     if not path.exists() and language != THAI:
         path = prompt_path(name, THAI)
-    return audio_io.load_wav(path)
+    return trim_silence(audio_io.load_wav(path))

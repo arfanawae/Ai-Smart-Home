@@ -101,7 +101,14 @@ def make_service() -> DeviceService:
     from nexus.config import load_settings
 
     settings = load_settings()
-    if settings.device_mode != "mock":  # an UnoQDriver will plug in here in M5
-        print(f"DEVICE_MODE={settings.device_mode!r} is not supported yet", file=sys.stderr)
-        raise SystemExit(2)
+    if settings.device_mode == "unoq":
+        from nexus.devices.drivers.unoq import UnoQDriver
+
+        try:
+            driver = UnoQDriver(settings.unoq_url or "", settings.unoq_token or "")
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            raise SystemExit(2) from e
+        print(f"devices: Arduino UNO Q at {settings.unoq_url}", file=sys.stderr)
+        return DeviceService(driver)
     return DeviceService(MockDriver())

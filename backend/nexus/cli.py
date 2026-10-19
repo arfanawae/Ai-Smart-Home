@@ -97,7 +97,12 @@ async def chat() -> None:
     llm = f"Gemini · {settings.llm_model}" if assistant.llm else f"{YELLOW}ยังไม่ได้ตั้งค่า (Fast path อย่างเดียว){RESET}"
     print(f"{CYAN}{BOLD}N E X U S{RESET}  {DIM}M1 · ขั้น 1.1{RESET}")
     via = "ผ่าน MCP Server (stdio)" if settings.device_backend == "mcp" else "ในโปรเซสเดียวกัน (local)"
-    print(f"  อุปกรณ์: {YELLOW}โหมดจำลอง (MOCK){RESET} — ยังไม่ได้เชื่อมต่ออุปกรณ์จริง · {via}")
+    kind = (
+        f"{YELLOW}โหมดจำลอง (MOCK){RESET} — ยังไม่ได้เชื่อมต่ออุปกรณ์จริง"
+        if devices.simulated
+        else f"{CYAN}Arduino UNO Q (อุปกรณ์จริง){RESET} {settings.unoq_url}"
+    )
+    print(f"  อุปกรณ์: {kind} · {via}")
     print(f"  LLM: {llm}")
     print(f"  โควตา: {assistant.quota.summary_th()}")
     print(HELP)
@@ -162,3 +167,7 @@ def main() -> None:
         asyncio.run(chat())
     else:
         print("ใช้งาน: python -m nexus [chat|models]")
+
+
+if __name__ == "__main__":  # python -m nexus.cli (same as python -m nexus)
+    main()

@@ -78,8 +78,10 @@ class McpDevices:
                 raise ConnectionError("MCP Server ไม่ตอบระหว่างเริ่มต้น") from None
             if not self.connected:
                 raise ConnectionError(f"เริ่ม MCP Server ไม่ได้: {self._error}")
-        state = await self.get_state("main_light")
-        self._simulated = state is None or state.source == "mock"
+        # The server stamps every result with whether its driver is simulated — even a FAILED one,
+        # so this is right when the real board is offline at start-up.
+        probe = await self.execute("get_device_status", {"device_id": "main_light"})
+        self._simulated = probe.simulated
 
     async def _run(self, stop: asyncio.Event, ready: asyncio.Event) -> None:
         """Owns the subprocess and the session for their whole life (anyio needs one task for both).

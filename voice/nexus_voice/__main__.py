@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import sys
 
@@ -62,6 +63,9 @@ def show(event: Event) -> None:
         print_event(event)
 
 
+BOARD_WATCH_INTERVAL_S = 1.0
+
+
 class Core:
     """Assistant + UI feed, shared by every mode."""
 
@@ -79,18 +83,44 @@ class Core:
         )
         self.assistant: Assistant
         self.assistant, self.devices = build_assistant(backend, emit=self.emit_from_assistant)
+        self._watcher: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         try:
             await self.devices.start()  # spawns the MCP server when DEVICE_BACKEND=mcp
         except ConnectionError as e:
             sys.exit(f"{e} — ลองรัน: python -m nexus_mcp (ดูข้อความผิดพลาด) หรือใช้ DEVICE_BACKEND=local")
+        self.broadcaster.update_info(simulated=self.devices.simulated)  # MOCK badge only when it is
         state = await self.devices.get_state("main_light")
         if state is not None:
             self.broadcaster.set_device("main_light", state.to_dict())
         await self.broadcaster.start()
+        if not self.devices.simulated:
+            self._watcher = asyncio.create_task(self._watch_board())
+
+    async def _watch_board(self) -> None:
+        """Heartbeat: the relay marks the board offline 2 s after its last poll; this pushes that (and
+        any change made outside NEXUS) to the web UI within about a second more."""
+        while True:
+            await asyncio.sleep(BOARD_WATCH_INTERVAL_S)
+            try:
+                state = await self.devices.get_state("main_light")
+            except Exception:
+                logging.getLogger(__name__).exception("board status check failed")
+                state = None
+            shown = self.broadcaster.device("main_light")
+            if state is not None:
+                fresh = state.to_dict()
+            elif shown and shown.get("online"):
+                fresh = {**shown, "online": False}  # unreachable: keep the last known values, mark offline
+            else:
+                continue
+            if shown is None or any(fresh.get(k) != shown.get(k) for k in ("online", "on", "brightness")):
+                self.broadcaster.push_device("main_light", fresh)
 
     async def close(self) -> None:
+        if self._watcher:
+            self._watcher.cancel()
         await self.broadcaster.stop()
         await self.devices.close()
 
@@ -117,6 +147,13 @@ class Core:
             self.emit(StateChanged(AIState.SPEAKING))
 
     async def on_client_message(self, message: dict[str, Any]) -> None:
+        try:
+            await self._client_turn(message)
+        except Exception as e:  # runs as a background task: an error here would otherwise vanish silently
+            logging.getLogger(__name__).exception("web turn failed")
+            self.emit(StateChanged(AIState.ERROR, f"ทำคำสั่งไม่สำเร็จ ({type(e).__name__}: {e})"[:200]))
+
+    async def _client_turn(self, message: dict[str, Any]) -> None:
         if message["type"] == "text":
             self.emit(UserMessage(message["text"], "text"))
             await self.assistant.handle(message["text"])  # typed turns are answered in text, not spoken
@@ -144,7 +181,8 @@ def banner(core: Core, mode: str, voice: VoiceSettings | None) -> None:
     llm = f"Gemini · {core.backend.llm_model}" if core.assistant.llm else f"{YELLOW}ไม่มี (Fast path อย่างเดียว){RESET}"
     stt = f" · STT: {' + '.join(voice.stt_languages)}" if voice else ""
     via = "MCP Server (stdio)" if core.backend.device_backend == "mcp" else "local"
-    print(f"  อุปกรณ์: {YELLOW}โหมดจำลอง (MOCK){RESET} ผ่าน {via} · LLM: {llm}{stt}")
+    kind = f"{YELLOW}โหมดจำลอง (MOCK){RESET}" if core.devices.simulated else f"{CYAN}Arduino UNO Q (อุปกรณ์จริง){RESET}"
+    print(f"  อุปกรณ์: {kind} ผ่าน {via} · LLM: {llm}{stt}")
     print(f"  หน้าเว็บ: ws://{DEFAULT_HOST}:{core.broadcaster.port}  (cd frontend && npm run dev)")
 
 

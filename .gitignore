@@ -17,3 +17,9 @@ voice/recordings/
 
 # Downloaded speech models (large, re-downloadable)
 voice/models/
+
+# UNO Q controller secret (lives only on the board)
+unoq/app/python/token.txt
+
+# Node relay
+relay/node_modules/

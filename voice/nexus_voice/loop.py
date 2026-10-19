@@ -2,7 +2,7 @@
 
     IDLE ─ "Nexus" ─▶ WAKE_DETECTED ("ว่าไงครับ") ─▶ LISTENING ─ VAD ─▶ TRANSCRIBING ─▶ Assistant.handle()
       ▲                                                  ▲                     (fast path / Gemini → device)
-      └── 15 s of silence / "ขอบคุณ Nexus" ───────────────┴──────── SPEAKING ◀── sentences → streaming TTS
+      └── 60 s of silence / "ขอบคุณ Nexus" ───────────────┴──────── SPEAKING ◀── sentences → streaming TTS
 
 Latency design (bench_latency.py):
   - STT starts when VAD hears speech, and audio is pushed while the user talks, so the transcript is
@@ -18,7 +18,9 @@ recorded audio in tests (test_voice_loop.py) and benchmarks.
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
+import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from typing import Protocol
@@ -28,21 +30,37 @@ from nexus.events import AIState, EventSink, StateChanged, UserMessage
 
 from . import sounds
 from .corrections import correct
-from .speech import THAI, STTResult
+from .speech import ENGLISH, THAI, STTResult
 from .vad import UtteranceSegmenter
 from .wakeword import WakeWordDetector
 
 # Silence allowed after NEXUS answers before it goes back to waiting for "Nexus". It is extended every
 # time the user starts speaking, so a real conversation never runs against a clock; it only ends the
 # session (and stops sending audio to the cloud) once the room has been quiet for this long.
-CONVERSATION_WINDOW_S = 15.0
+CONVERSATION_WINDOW_S = 60.0  # VOICE_SESSION_TIMEOUT_SEC in backend/.env
 # After the speaker stops, the room still rings for a moment. Without this, the microphone heard that
 # tail, VAD took it for speech, STT returned nothing, and "ไม่ได้ยิน" played again — an endless loop.
 ECHO_TAIL_S = 0.4
 # Two empty transcripts in a row (noise, a cough, the TV) end the session quietly.
 MAX_EMPTY_TRANSCRIPTS = 2
 LISTENING_HINT = "สามารถพูดต่อได้ทันที"
-STOP_PHRASES = ("ขอบคุณ nexus", "แค่นี้แหละ", "แค่นี้ก่อน", "thank you nexus", "that's all", "goodbye")
+# Ends the session only when it is the whole utterance (after dropping "NEXUS", punctuation and polite
+# particles), so "เปิดไฟหน่อย ขอบคุณครับ" or "stop the music" is still handled as a request.
+STOP_PHRASES = frozenset({
+    "ขอบคุณ", "ขอบคุณมาก", "แค่นี้แหละ", "แค่นี้ก่อน", "พอแล้ว", "บาย", "บายบาย",
+    "stop", "bye", "bye bye", "goodbye", "exit", "thank you", "thanks", "that's all", "that is all",
+})
+_PUNCTUATION = re.compile(r"[.,!?;:\"()…\-]")
+_THAI_GAP = re.compile(r"(?<=[฀-๿])\s+(?=[฀-๿])")  # STT may space Thai words
+_POLITE_TAIL = re.compile(r"\s*(?:ครับผม|ครับ|คับ|ค่ะ|คะ|นะ|จ้ะ|จ้า)+$")
+TURN_FAILED = {THAI: "ทำคำสั่งนี้ไม่สำเร็จครับ ลองพูดใหม่ได้เลยครับ", ENGLISH: "That didn't work. Please try again."}
+
+log = logging.getLogger(__name__)
+
+
+def is_departure(text: str) -> bool:
+    phrase = " ".join(_PUNCTUATION.sub(" ", text.lower()).replace("nexus", " ").split())
+    return _POLITE_TAIL.sub("", _THAI_GAP.sub("", phrase)).strip() in STOP_PHRASES
 
 # Plays audio as it arrives (a whole prompt is just a one-chunk stream).
 Player = Callable[[AsyncIterator[bytes]], Awaitable[None]]
@@ -235,6 +253,28 @@ class VoiceLoop:
         return await asyncio.to_thread(self._stt.transcribe, pcm)
 
     async def _handle_utterance(self, pcm: bytes) -> None:
+        try:
+            await self._run_utterance(pcm)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # one failed turn must never end the voice session or the process
+            log.exception("voice turn failed")
+            await self._recover(e)
+
+    async def _recover(self, error: Exception) -> None:
+        """Show what broke, say so briefly (if TTS still works), and keep listening."""
+        self._drop_stt_session()
+        self._set(AIState.ERROR, f"ทำคำสั่งไม่สำเร็จ ({type(error).__name__}: {error})"[:200])
+        sentences: asyncio.Queue[str | None] = asyncio.Queue()
+        sentences.put_nowait(TURN_FAILED.get(self.language, TURN_FAILED[THAI]))
+        sentences.put_nowait(None)
+        try:
+            await self._say(self._speak_sentences(sentences))
+        except Exception:
+            log.exception("could not speak the error message")
+        self._listen()
+
+    async def _run_utterance(self, pcm: bytes) -> None:
         self._set(AIState.TRANSCRIBING, f"{len(pcm) / 32000:.1f} วินาที")
         stt = await self._transcribe(pcm)
         if stt.status != "ok" or not stt.text.strip():
@@ -244,7 +284,7 @@ class VoiceLoop:
         self.language = stt.language or THAI
         text = correct(stt.text)
         self._emit(UserMessage(text, "voice", stt.language))
-        if any(phrase in text.lower() for phrase in STOP_PHRASES):
+        if is_departure(text):
             await self._say_prompt("goodbye")
             self._sleep()
             return

@@ -79,6 +79,8 @@ export function reduce(s: NexusData, msg: FeedMsg, now = Date.now()): NexusData 
         nextId: s.nextId + 1,
       }
     }
+    case 'device':
+      return { ...s, devices: { ...s.devices, [msg.device_id]: msg.state } }
     case 'error':
       return { ...s, lastError: msg.message }
     case 'level':

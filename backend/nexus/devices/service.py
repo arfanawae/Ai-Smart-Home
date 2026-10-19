@@ -7,6 +7,7 @@ A command only counts as SUCCEEDED when the device reports the desired state bac
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 import uuid
 from collections import deque
@@ -89,6 +90,8 @@ def _matches(desired: dict[str, Any], reported: LightState) -> bool:
     return not desired["on"] or reported.brightness == desired["brightness"]
 
 
+log = logging.getLogger(__name__)
+
 class DeviceService:
     def __init__(
         self,
@@ -96,7 +99,9 @@ class DeviceService:
         *,
         timeout_s: float = 3.0,
         retries: int = 1,
-        max_commands_per_s: int = 5,
+        # A slider sends at most one command per 80 ms (12.5/s) and only one at a time; anything above
+        # this is a runaway caller, not a person.
+        max_commands_per_s: int = 15,
     ) -> None:
         self.driver = driver
         self._timeout_s = timeout_s
@@ -124,6 +129,9 @@ class DeviceService:
             return await asyncio.wait_for(self.driver.get_state(device_id), self._timeout_s)
         except (DeviceUnavailable, TimeoutError):
             return None
+        except Exception:  # unknown is the honest answer; never crash a status read
+            log.exception("reading %s failed unexpectedly", device_id)
+            return None
 
     def _rate_ok(self, device_id: str) -> bool:
         now = time.monotonic()
@@ -140,6 +148,29 @@ class DeviceService:
         tool: str,
         args: dict[str, Any],
         on_waiting: Callable[[], None] | None = None,
+    ) -> CommandResult:
+        """Never raises: any unexpected driver error becomes a FAILED result the user can read."""
+        try:
+            return await self._execute(tool, args, on_waiting)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # a driver bug or an unexpected reply must not take the caller down
+            log.exception("device command %s failed unexpectedly", tool)
+            return CommandResult(
+                tool=tool,
+                args=dict(args) if isinstance(args, dict) else {},
+                status=CommandStatus.FAILED,
+                simulated=self.simulated,
+                latency_ms=0,
+                device_id=args.get("device_id") if isinstance(args, dict) else None,
+                error=f"เกิดข้อผิดพลาดภายในระหว่างสั่งอุปกรณ์ ({type(e).__name__}) — สถานะไฟไม่แน่ชัด",
+            )
+
+    async def _execute(
+        self,
+        tool: str,
+        args: dict[str, Any],
+        on_waiting: Callable[[], None] | None,
     ) -> CommandResult:
         started = time.monotonic()
 
@@ -183,7 +214,7 @@ class DeviceService:
         reported: LightState | None = None
         for _attempt in range(self._retries + 1):
             try:
-                reported = await asyncio.wait_for(self.driver.apply(device_id, desired), self._timeout_s)
+                reported = await asyncio.wait_for(self.driver.apply(device_id, {**desired, "command_id": command_id}), self._timeout_s)
                 break
             except TimeoutError:
                 continue  # safe to retry: the desired state is absolute

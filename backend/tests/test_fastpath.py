@@ -14,6 +14,8 @@ LIGHT = {"device_id": "main_light"}
         ("ช่วยเปิดไฟห้องหลักให้หน่อยครับ", "turn_light_on", {}),
         ("Nexus ปิดไฟ", "turn_light_off", {}),
         ("ปิดหลอดไฟหน่อย", "turn_light_off", {}),
+        ("งั้นลองปิดไฟให้หน่อย", "turn_light_off", {}),  # "ลอง...หน่อย" is a polite request
+        ("ลองเปิดไฟให้หน่อยครับ", "turn_light_on", {}),
         ("หรี่ไฟเหลือ 30", "set_brightness", {"level": 30}),
         ("ลดไฟเหลือ 30%", "set_brightness", {"level": 30}),
         ("ตั้งไฟ 70 เปอร์เซ็นต์", "set_brightness", {"level": 70}),
@@ -94,6 +96,7 @@ def test_off_is_not_matched_inside_on():
         ("Turn the light off later", "condition_or_time"),
         # hedging / reported speech
         ("ลองเปิดไฟดู", "hedging"),
+        ("ลองเปิดไฟดีกว่า", "hedging"),
         ("Maybe turn on the light", "hedging"),
         ("แม่บอกให้ปิดไฟ", "reported_speech"),
         ("Mom said turn off the light", "reported_speech"),

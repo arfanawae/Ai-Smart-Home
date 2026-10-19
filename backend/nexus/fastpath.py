@@ -79,6 +79,8 @@ _TH_STATUS = (
     re.compile(r"สถานะ\S{0,6}ไฟ"),
 )
 _TH_POLITE = re.compile(r"\s*ได้\s*(?:ไหม|มั้ย|ป่ะ|หรือเปล่า|รึเปล่า)(?:\s*(?:ครับ|ค่ะ|คะ))?$")
+# "ลองปิดไฟให้หน่อย" asks for the action (a polite "please"); "ลองเปิดไฟดู" alone stays hedging
+_TH_TRY_REQUEST = re.compile(r"(?:งั้น\s*)?ลอง\s*(?=(?:ช่วย\s*)?(?:เปิด|ปิด|หรี่|ปรับ|ลด|เพิ่ม)\S*.*หน่อย)")
 _TH_TIME = re.compile(r"อีก\s*\d|อีก\s*(?:สัก)?\s*(?:ครึ่ง)?\s*(?:นาที|ชั่วโมง|วินาที|วัน)")
 _TH_BLOCKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("question", ("ไหม", "มั้ย", "หรือ", "รึ", "ป่ะ", "?", "อะไร", "ยังไง", "เท่าไร", "เท่าไหร่", "ทำไม")),
@@ -114,6 +116,7 @@ def _decide_th(t: str) -> FastPathDecision:
         return _execute("get_device_status", "status_question")
     if wants_on or wants_off or _TH_DOWN.search(t) or _TH_UP.search(t):
         t = _TH_POLITE.sub("", t)  # "ช่วยเปิดไฟได้ไหม" is a request, not a question
+        t = _TH_TRY_REQUEST.sub("", t)
     if _TH_TIME.search(t):
         return _defer("condition_or_time")
     for reason, markers in _TH_BLOCKERS:

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 RESET_TZ = ZoneInfo("America/Los_Angeles")
 WARN_RATIO = 0.8
+
+log = logging.getLogger(__name__)
 
 
 class QuotaTracker:
@@ -18,6 +21,7 @@ class QuotaTracker:
         self._day = ""
         self.used = 0
         self.exhausted = False  # set after a 429: stop calling until the next reset
+        self._save_failed = False  # warn once, not on every request
         self._load()
 
     @staticmethod
@@ -35,9 +39,17 @@ class QuotaTracker:
         self._roll_over()
 
     def _save(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+        """Best effort: the counter is bookkeeping, so a file it cannot write never stops a turn."""
         payload = {"day": self._day, "used": self.used, "exhausted": self.exhausted}
-        self._path.write_text(json.dumps(payload), encoding="utf-8")
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._path.write_text(json.dumps(payload), encoding="utf-8")
+        except OSError as e:  # PermissionError, disk full, file locked by another program
+            if not self._save_failed:
+                log.warning("cannot save the LLM usage counter to %s (%s); counting in memory only", self._path, e)
+            self._save_failed = True
+        else:
+            self._save_failed = False
 
     def _roll_over(self) -> None:
         today = self._today()

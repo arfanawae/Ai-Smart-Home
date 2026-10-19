@@ -101,8 +101,21 @@ class EventBroadcaster:
             await self._server.wait_closed()
             self._server = None
 
+    def update_info(self, **info: Any) -> None:
+        """Facts for the hello message that are only known after start-up (e.g. simulated or real)."""
+        self._hello.update(info)
+
     def set_device(self, device_id: str, state: dict[str, Any]) -> None:
         self._devices[device_id] = state
+
+    def device(self, device_id: str) -> dict[str, Any] | None:
+        return self._devices.get(device_id)
+
+    def push_device(self, device_id: str, state: dict[str, Any]) -> None:
+        """A device changed outside any command (board connected/disconnected): tell every client."""
+        self._devices[device_id] = state
+        message = {"type": "device", "device_id": device_id, "state": state, "ts": datetime.now().isoformat(timespec="milliseconds")}
+        self._broadcast(json.dumps(message, ensure_ascii=False))
 
     def publish(self, event: Event) -> None:
         """Call from the asyncio thread. Never blocks: messages are queued per client."""

@@ -87,7 +87,15 @@ export interface ErrorMsg {
   message: string
 }
 
-export type FeedMsg = HelloMsg | StateMsg | UserMsg | ReplyMsg | CommandMsg | LevelMsg | ErrorMsg
+/** A device changed outside any command — e.g. the board stopped polling (heartbeat lost). */
+export interface DeviceMsg {
+  type: 'device'
+  device_id: string
+  state: LightState
+  ts: string
+}
+
+export type FeedMsg = HelloMsg | StateMsg | UserMsg | ReplyMsg | CommandMsg | LevelMsg | ErrorMsg | DeviceMsg
 
 export type ClientMsg =
   | { type: 'text'; text: string }

@@ -83,3 +83,12 @@ describe('effectiveState', () => {
     expect(effectiveState({ connection: 'closed', ai, demo: true })).toBe('SPEAKING')
   })
 })
+
+describe('device message (board heartbeat)', () => {
+  it('replaces the device state, e.g. when the board goes offline', () => {
+    const online = { ...light(true, 60), online: true }
+    let s = reduce(initialData, { type: 'device', device_id: 'main_light', state: online, ts: '' })
+    s = reduce(s, { type: 'device', device_id: 'main_light', state: { ...online, online: false }, ts: '' })
+    expect(s.devices.main_light).toMatchObject({ online: false, on: true, brightness: 60 })
+  })
+})

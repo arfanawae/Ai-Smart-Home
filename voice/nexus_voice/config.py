@@ -54,5 +54,7 @@ def load_settings() -> VoiceSettings:
         input_device=_optional_int("AUDIO_INPUT_DEVICE"),
         output_device=_optional_int("AUDIO_OUTPUT_DEVICE"),
         vad_end_silence_ms=_optional_int("VAD_END_SILENCE_MS") or VadConfig().end_silence_ms,
-        conversation_window_s=float(_env("CONVERSATION_WINDOW_S", "15")),
+        # Session length after "Nexus" with no speech; reset on every utterance and every reply.
+        # CONVERSATION_WINDOW_S is the older name, still honoured.
+        conversation_window_s=float(_env("VOICE_SESSION_TIMEOUT_SEC", _env("CONVERSATION_WINDOW_S", "60"))),
     )

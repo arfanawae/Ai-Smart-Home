@@ -28,7 +28,6 @@ from dataclasses import dataclass
 from typing import Literal, Protocol
 
 import azure.cognitiveservices.speech as speechsdk
-
 from .audio_io import SAMPLE_RATE
 
 Status = Literal["ok", "no_match", "error"]
@@ -175,11 +174,16 @@ def pick_most_confident(
 
 
 def _cancel_message(details: speechsdk.CancellationDetails | speechsdk.SpeechSynthesisCancellationDetails) -> str:
-    message = f"{details.reason}: {details.error_details or ''}".strip(": ")
-    if "401" in message or "Authentication" in message:
-        return "Azure Speech key หรือ region ไม่ถูกต้อง — ตรวจ AZURE_SPEECH_KEY / AZURE_SPEECH_REGION"
-    if "429" in message or "quota" in message.lower():
-        return "โควตา Azure Speech หมดหรือเรียกถี่เกินไป"
+    # ดึง error_details มาและแปลงเป็นสตริงป้องกันกรณีส่งค่า None
+    raw_error = str(details.error_details or "")
+    message = f"{details.reason}: {raw_error}".strip(": ")
+    
+    # แปลงข้อความความผิดพลาดทั้งหมดเป็นตัวพิมพ์เล็กเพื่อเทียบคำ
+    msg_lower = message.lower()
+    if "401" in msg_lower or "auth" in msg_lower or "unauthorized" in msg_lower:
+        return "Azure Speech key หรือ region ไม่ถูกต้อง — ตรวจสอบ AZURE_SPEECH_KEY / AZURE_SPEECH_REGION" 
+    if "429" in msg_lower or "quota" in msg_lower or "rate limit" in msg_lower:
+        return "โควตา Azure Speech หมดหรือถูกจำกัดอัตราส่งคำสั่ง (Rate Limit)"
     return message
 
 

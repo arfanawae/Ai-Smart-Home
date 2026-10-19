@@ -50,6 +50,18 @@ export function systemRows(connection: Connection, info: Info | null, light: Lig
     info?.devicesVia === 'mcp'
       ? { key: 'mcp', name: 'MCP Server', tone: 'ok', value: 'เชื่อมต่อแล้ว · stdio', hint: 'ทุกคำสั่งไปอุปกรณ์ผ่าน MCP Server' }
       : { key: 'mcp', name: 'MCP Server', tone: 'off', value: info?.devicesVia === 'local' ? 'ไม่ได้ใช้ (local)' : 'ไม่ทราบ' },
-    { key: 'unoq', name: 'Arduino UNO Q', tone: 'off', value: 'ยังไม่เชื่อมต่อ', hint: 'จะเพิ่มใน M5' },
+    boardRow(info, light),
   ]
+}
+
+/** The board is what reports the main light's state, so its link is read from that state. */
+function boardRow(info: Info | null, light: LightState | undefined): SystemRow {
+  const row = { key: 'unoq', name: 'Arduino UNO Q' }
+  if (!info || info.simulated) {
+    return { ...row, tone: 'off', value: 'ไม่ได้ใช้ (โหมดจำลอง)', hint: 'ตั้ง DEVICE_MODE=unoq ใน backend/.env เพื่อใช้บอร์ดจริง' }
+  }
+  if (!light) return { ...row, tone: 'warn', value: 'ยังไม่ทราบสถานะ' }
+  return light.online
+    ? { ...row, tone: 'ok', value: 'เชื่อมต่อแล้ว · ผ่าน relay', hint: 'สถานะไฟมาจากบอร์ดจริง' }
+    : { ...row, tone: 'bad', value: 'ไม่ได้เชื่อมต่อ', hint: 'ตรวจว่า relay เปิดอยู่ และ App บนบอร์ดกำลังรัน' }
 }

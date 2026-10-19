@@ -289,3 +289,48 @@ def test_finished_speech_is_counted_so_the_mic_reader_can_flush_stale_audio(tmp_
     run(loop, UTTERANCE)
     assert loop.utterances_spoken == 2  # one reply (acknowledgement + confirmation in one stream)
     assert not loop.speaking
+
+
+def test_a_crashing_turn_keeps_the_session_alive(tmp_path):
+    loop, driver, tts, _, events = make(
+        tmp_path,
+        STTResult("ok", "เปิดไฟห้องหลัก", THAI, 0.9),
+        STTResult("ok", "ปิดไฟห้องหลัก", THAI, 0.9),
+    )
+    real_handle, calls = loop.assistant.handle, []
+
+    async def flaky(*args, **kwargs):  # first turn blows up like the PermissionError did
+        calls.append(args[0])
+        if len(calls) == 1:
+            raise PermissionError("llm_usage.json")
+        return await real_handle(*args, **kwargs)
+
+    loop.assistant.handle = flaky
+    run(loop, [WAKE] + UTTERANCE + UTTERANCE)
+    assert AIState.ERROR in states(events)
+    assert "ทำคำสั่งนี้ไม่สำเร็จครับ ลองพูดใหม่ได้เลยครับ" in tts.spoken
+    assert calls == ["เปิดไฟห้องหลัก", "ปิดไฟห้องหลัก"]  # the follow-up still ran, no new wake word
+    assert loop.state == AIState.LISTENING
+
+
+def test_departure_only_when_it_is_the_whole_utterance():
+    from nexus_voice.loop import is_departure
+
+    for text in ("ขอบคุณครับ", "ขอบคุณค่ะ", "ขอบคุณ NEXUS", "ขอบคุณ NEXUS ครับ", "Thank you, NEXUS.",
+                 "Bye.", "Stop!", "exit", "แค่นี้แหละครับ", "พอแล้ว"):
+        assert is_departure(text), text
+    for text in ("เปิดไฟหน่อย ขอบคุณครับ", "Stop the music", "ขอบคุณที่เปิดไฟให้", "Thanks, now dim it"):
+        assert not is_departure(text), text
+
+
+def test_session_timeout_setting(monkeypatch):
+    from nexus_voice import config
+
+    monkeypatch.setattr(config, "load_dotenv", lambda *_: None)
+    monkeypatch.delenv("CONVERSATION_WINDOW_S", raising=False)
+    monkeypatch.delenv("VOICE_SESSION_TIMEOUT_SEC", raising=False)
+    assert config.load_settings().conversation_window_s == 60
+    monkeypatch.setenv("CONVERSATION_WINDOW_S", "20")
+    assert config.load_settings().conversation_window_s == 20
+    monkeypatch.setenv("VOICE_SESSION_TIMEOUT_SEC", "45")
+    assert config.load_settings().conversation_window_s == 45

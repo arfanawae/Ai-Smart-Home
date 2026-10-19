@@ -20,6 +20,8 @@ class Settings:
     llm_timeout_s: float
     device_mode: str
     device_backend: str  # "mcp": devices via the MCP server subprocess · "local": in-process
+    unoq_url: str | None  # DEVICE_MODE=unoq: the NEXUS relay the board polls, e.g. http://127.0.0.1:8770
+    unoq_token: str | None
     data_dir: Path
 
 
@@ -38,8 +40,8 @@ def _device_backend() -> str:
 def load_settings() -> Settings:
     load_dotenv(BACKEND_DIR / ".env")
     device_mode = os.getenv("DEVICE_MODE", "mock").strip() or "mock"
-    if device_mode != "mock":
-        raise ValueError(f"DEVICE_MODE={device_mode!r} ยังไม่รองรับในขั้นนี้ (รองรับเฉพาะ mock)")
+    if device_mode not in ("mock", "unoq"):
+        raise ValueError(f"DEVICE_MODE={device_mode!r} ต้องเป็น mock หรือ unoq")
     return Settings(
         gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip() or None,
         llm_model=os.getenv("LLM_MODEL", "").strip() or DEFAULT_MODEL,
@@ -47,5 +49,7 @@ def load_settings() -> Settings:
         llm_timeout_s=float(os.getenv("LLM_TIMEOUT_S", "20") or 20),
         device_mode=device_mode,
         device_backend=_device_backend(),
+        unoq_url=os.getenv("UNOQ_URL", "").strip() or None,
+        unoq_token=os.getenv("UNOQ_TOKEN", "").strip() or None,
         data_dir=BACKEND_DIR / ".nexus",
     )
