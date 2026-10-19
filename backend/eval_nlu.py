@@ -62,7 +62,9 @@ async def run() -> None:
     for case in CASES:
         assert not decide(case.text).execute, f"{case.text!r} goes to the fast path, not Gemini"
         assistant, devices = build_assistant(settings, emit=lambda _e: None)
-        await devices.driver.apply(  # type: ignore[attr-defined]  # local backend: DeviceService"main_light", {"on": case.on, "brightness": case.brightness})
+        await devices.driver.apply(  # type: ignore[attr-defined]  # local backend: DeviceService
+            "main_light", {"on": case.on, "brightness": case.brightness}
+        )
         before = effective(case.on, case.brightness)
         turn = await assistant.handle(case.text)
         if turn.route == "system":  # quota / network error: this case was not actually tested

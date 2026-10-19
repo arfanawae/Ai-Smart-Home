@@ -104,8 +104,9 @@ function commandValue(body) {
   if (!on) return 0;
   
   // สั่ง on: true ให้ดึงค่า brightness (ถ้าไม่ระบุให้เป็น 100%)
+  // ค่าที่ไม่ถูกต้อง (เช่น 101, "abc", หรือ 0 คู่กับ on: true) ต้องถูกปฏิเสธ — ห้ามเดาเป็นเปิดไฟ 100%
   const rawBrightness = body.brightness !== undefined ? Number(body.brightness) : 100;
-  return isLevel(rawBrightness) && rawBrightness > 0 ? rawBrightness : 100;
+  return isLevel(rawBrightness) && rawBrightness > 0 ? rawBrightness : null;
 }
 
 // ── app ───────────────────────────────────────────────────────────────────────────────────────
