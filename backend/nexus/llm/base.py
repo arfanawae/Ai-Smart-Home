@@ -8,7 +8,8 @@ from typing import Any, Literal, Protocol
 
 from ..tools import ToolSpec
 
-LLMErrorKind = Literal["quota", "auth", "model_not_found", "bad_request", "timeout", "unavailable"]
+# "quota": the daily quota is used up (until the reset) · "rate_limit": too many requests per minute (seconds)
+LLMErrorKind = Literal["quota", "rate_limit", "auth", "model_not_found", "bad_request", "timeout", "unavailable"]
 
 
 @dataclass(frozen=True)
@@ -43,9 +44,10 @@ class LLMResponse:
 
 
 class LLMError(Exception):
-    def __init__(self, kind: LLMErrorKind, message: str) -> None:
+    def __init__(self, kind: LLMErrorKind, message: str, retry_after_s: float | None = None) -> None:
         super().__init__(message)
         self.kind = kind
+        self.retry_after_s = retry_after_s  # rate_limit: how long Gemini asked us to wait
 
 
 class LLMProvider(Protocol):

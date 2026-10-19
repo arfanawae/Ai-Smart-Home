@@ -203,6 +203,9 @@ class Assistant:
         if self.llm is None:
             self._state(AIState.ERROR, "ยังไม่ได้ตั้งค่า Gemini")
             return TurnResult("system", messages["no_llm"])
+        if (wait := self.quota.paused_for) > 0 and not self.quota.exhausted:
+            self._state(AIState.ERROR, "เรียก AI ถี่เกินไป")
+            return TurnResult("system", messages["rate_limit"].format(seconds=max(1, round(wait))))
         if not self.quota.can_request():
             self._state(AIState.ERROR, "โควตาหมด")
             reset = f"{self.quota.next_reset_local():%H:%M}"
@@ -251,10 +254,18 @@ class Assistant:
         except LLMError as e:
             if e.kind == "quota":
                 self.quota.mark_exhausted()
+            elif e.kind == "rate_limit":
+                self.quota.pause(e.retry_after_s or 30.0)
             self._state(AIState.ERROR, str(e))
             # The partial turn is dropped so history never holds an unanswered tool call.
             note = "".join(f" {replies.describe_result(c)}" for c in commands if c.tool != "get_device_status")
-            return TurnResult("system", messages["llm_failed"].format(reason=e.kind) + note, commands)
+            if e.kind == "rate_limit":
+                reply = messages["rate_limit"].format(seconds=max(1, round(e.retry_after_s or 30.0)))
+            elif e.kind == "quota":
+                reply = messages["quota"].format(reset=f"{self.quota.next_reset_local():%H:%M}")
+            else:
+                reply = messages["llm_failed"].format(reason=e.kind)
+            return TurnResult("system", reply + note, commands)
 
         self._state(AIState.ERROR, "ใช้เครื่องมือหลายรอบเกินไป")
         return TurnResult("system", messages["too_many_steps"], commands)

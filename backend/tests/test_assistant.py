@@ -337,3 +337,17 @@ def test_stt_language_overrides_the_script_guess(tmp_path):
     assistant, _, _ = make(llm, tmp_path)
     asyncio.run(assistant.handle("OK", "th-TH"))  # Latin text, but Thai speech
     assert 'user_language: "th-TH"' in llm.systems[0]
+
+
+def test_per_minute_rate_limit_pauses_briefly_instead_of_all_day(tmp_path):
+    llm = ScriptedLLM(LLMError("rate_limit", "429", retry_after_s=0.3), LLMResponse("สวัสดีครับ", []))
+    assistant, _, _ = make(llm, tmp_path)
+    first = asyncio.run(assistant.handle("วันนี้ร้อนจัง"))
+    assert first.route == "system" and "ถี่เกินไป" in first.reply
+    assert not assistant.quota.exhausted  # the day is not over
+    # during the pause: answered at once, without calling Gemini
+    assert "ถี่เกินไป" in asyncio.run(assistant.handle("เล่าเรื่องตลกหน่อย")).reply and len(llm.calls) == 1
+    import time
+
+    time.sleep(0.35)
+    assert asyncio.run(assistant.handle("สวัสดี")).route == "llm" and len(llm.calls) == 2

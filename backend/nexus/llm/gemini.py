@@ -4,6 +4,8 @@ the assistant executes tools itself so every call passes the validator and the d
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 from collections.abc import AsyncIterator, Sequence
 
 import httpx
@@ -125,11 +127,27 @@ class GeminiProvider:
         return sorted(names)
 
 
+_RETRY_DELAY = re.compile(r'"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"')
+DEFAULT_RETRY_S = 30.0
+
+
+def _rate_error(e: errors.APIError, detail: str) -> LLMError:
+    """A 429 is either the daily quota (until the reset) or a per-minute limit (seconds). Gemini says
+    which in QuotaFailure.violations[].quotaId ("...PerDay..." / "...PerMinute...") and how long to
+    wait in RetryInfo.retryDelay. Unknown → per-minute: one burst must never switch the AI off all day."""
+    raw = json.dumps(e.details, default=str) if e.details else detail
+    if "PerDay" in raw:
+        return LLMError("quota", f"โควตา Gemini ของวันนี้หมดแล้ว: {detail}")
+    match = _RETRY_DELAY.search(raw)
+    wait = float(match.group(1)) if match else DEFAULT_RETRY_S
+    return LLMError("rate_limit", f"เรียก Gemini ถี่เกินไป — รอประมาณ {wait:.0f} วินาที", retry_after_s=wait)
+
+
 def _map_api_error(e: errors.APIError) -> LLMError:
     detail = e.message or str(e)
     match e.code:
         case 429:
-            return LLMError("quota", f"โควตา Gemini หมดหรือเรียกถี่เกินไป: {detail}")
+            return _rate_error(e, detail)
         case 401 | 403:
             return LLMError("auth", f"API key ของ Gemini ไม่ถูกต้องหรือไม่มีสิทธิ์: {detail}")
         case 404:

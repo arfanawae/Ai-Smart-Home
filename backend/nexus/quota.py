@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -22,6 +23,7 @@ class QuotaTracker:
         self.used = 0
         self.exhausted = False  # set after a 429: stop calling until the next reset
         self._save_failed = False  # warn once, not on every request
+        self._paused_until = 0.0  # per-minute rate limit: in memory only, it lasts seconds
         self._load()
 
     @staticmethod
@@ -56,9 +58,17 @@ class QuotaTracker:
         if self._day != today:
             self._day, self.used, self.exhausted = today, 0, False
 
+    def pause(self, seconds: float) -> None:
+        """Gemini said "too many requests per minute": hold off for that long, not for the whole day."""
+        self._paused_until = max(self._paused_until, time.monotonic() + max(0.0, seconds))
+
+    @property
+    def paused_for(self) -> float:
+        return max(0.0, self._paused_until - time.monotonic())
+
     def can_request(self) -> bool:
         self._roll_over()
-        if self.exhausted:
+        if self.exhausted or self.paused_for > 0:
             return False
         return self.daily_limit is None or self.used < self.daily_limit
 
