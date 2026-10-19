@@ -61,7 +61,13 @@ export function startDemo(frozen: AIState | null): () => void {
     const state = useNexus.getState().ai.state
     const source = state === 'SPEAKING' ? 'tts' : 'mic'
     const t = performance.now() / 1000
-    pushLevel(Math.max(0, 0.45 + 0.35 * Math.sin(t * 7) * Math.sin(t * 2.3)), source)
+    const rms = Math.max(0, 0.45 + 0.35 * Math.sin(t * 7) * Math.sin(t * 2.3))
+    // a speech-like spectrum: strong low/mid formants that wander, weaker highs
+    const bands = Array.from({ length: 24 }, (_, b) => {
+      const formant = Math.exp(-(((b - 6 - 3 * Math.sin(t * 3.1)) / 4) ** 2)) + 0.6 * Math.exp(-(((b - 14 - 2 * Math.sin(t * 2.2)) / 3) ** 2))
+      return Math.min(1, rms * (0.35 + formant) * (0.8 + 0.2 * Math.sin(t * 11 + b)))
+    })
+    pushLevel(rms, source, bands)
   }, 60)
 
   return () => {

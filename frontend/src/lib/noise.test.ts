@@ -48,3 +48,14 @@ describe('follow', () => {
     expect(v).toBeCloseTo(0.8, 2)
   })
 })
+
+describe('liveLevel', () => {
+  it('never exceeds 1, even when the frame time is older than the last level', async () => {
+    const { levels, liveLevel, pushLevel } = await import('./levels')
+    pushLevel(0.8, 'mic', undefined, 1000)
+    expect(liveLevel(600)).toBeLessThanOrEqual(1) // negative age used to amplify the level
+    expect(liveLevel(1000)).toBeCloseTo(0.8)
+    expect(liveLevel(2000)).toBe(0)
+    expect(levels.source).toBe('mic')
+  })
+})

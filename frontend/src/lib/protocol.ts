@@ -69,6 +69,8 @@ export interface LevelMsg {
   type: 'level'
   rms: number
   source: 'mic' | 'tts'
+  /** Energy per frequency band, low → high, 0–1 (FFT of the same real audio). */
+  bands?: number[]
 }
 
 export interface HelloMsg {

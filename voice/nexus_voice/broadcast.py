@@ -126,10 +126,14 @@ class EventBroadcaster:
             self._devices[event.result.device_id] = event.result.reported.to_dict()
         self._broadcast(json.dumps(message, ensure_ascii=False))
 
-    def publish_level(self, rms: float, source: str) -> None:
-        """Loudness 0–1 of the mic ("mic") or of NEXUS's own voice ("tts"). Not kept in the snapshot."""
+    def publish_level(self, rms: float, source: str, bands: list[float] | None = None) -> None:
+        """Loudness 0–1 of the mic ("mic") or of NEXUS's own voice ("tts"), optionally with per-band
+        energies (low → high, 0–1) for the equaliser. Not kept in the snapshot."""
         if self._clients:
-            self._broadcast(json.dumps({"type": "level", "rms": round(min(max(rms, 0.0), 1.0), 3), "source": source}))
+            message: dict[str, Any] = {"type": "level", "rms": round(min(max(rms, 0.0), 1.0), 3), "source": source}
+            if bands is not None:
+                message["bands"] = bands
+            self._broadcast(json.dumps(message))
 
     def _broadcast(self, payload: str) -> None:
         for queue in self._clients.values():

@@ -210,13 +210,16 @@ async def start_voice(play: Player | None = None) -> tuple[Core, VoiceLoop, Azur
                 for i in range(0, len(chunk), PLAYBACK_PIECE_BYTES):
                     piece = chunk[i : i + PLAYBACK_PIECE_BYTES]
                     heard_at = max(heard_at, aio.time() + out.latency)  # a gap (e.g. between sentences)
-                    aio.call_at(heard_at, core.broadcaster.publish_level, audio_io.loudness(piece), "tts")
+                    aio.call_at(
+                        heard_at, core.broadcaster.publish_level,
+                        audio_io.loudness(piece), "tts", audio_io.spectrum(piece),
+                    )
                     heard_at += len(piece) / (audio_io.SAMPLE_RATE * audio_io.SAMPLE_WIDTH)
                     await asyncio.to_thread(out.write, piece)
         finally:
             await asyncio.to_thread(out.stop)  # waits for the buffered audio to finish playing
             out.close()
-            aio.call_at(max(heard_at, aio.time()), core.broadcaster.publish_level, 0.0, "tts")
+            aio.call_at(max(heard_at, aio.time()), core.broadcaster.publish_level, 0.0, "tts", [0.0] * audio_io.SPECTRUM_BANDS)
 
     segmenter = UtteranceSegmenter(VadConfig(end_silence_ms=voice.vad_end_silence_ms))
     loop = VoiceLoop(
@@ -242,7 +245,9 @@ async def run_live() -> None:
         aio.call_soon_threadsafe(frames_in.put_nowait, frame)
         counter += 1
         if counter % LEVEL_EVERY_FRAMES == 0:
-            aio.call_soon_threadsafe(core.broadcaster.publish_level, audio_io.loudness(frame), "mic")
+            aio.call_soon_threadsafe(
+                core.broadcaster.publish_level, audio_io.loudness(frame), "mic", audio_io.spectrum(frame)
+            )
 
     try:
         with sd.RawInputStream(

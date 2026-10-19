@@ -31,6 +31,32 @@ def peak_dbfs(pcm: bytes) -> float:
     return 20 * np.log10(max(peak, 1e-9))
 
 
+SPECTRUM_BANDS = 24
+_LOW_HZ, _HIGH_HZ = 90.0, 7600.0  # where speech energy is (16 kHz audio tops out at 8 kHz)
+
+
+def spectrum(pcm: bytes, bands: int = SPECTRUM_BANDS, floor_db: float = -75.0, ceiling_db: float = -25.0) -> list[float]:
+    """0–1 energy per log-spaced frequency band, low to high — the web UI's equaliser bars.
+
+    Real audio only (mic frames or NEXUS's own voice); silence gives all zeros.
+    """
+    samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+    if samples.size < 64:
+        return [0.0] * bands
+    window = np.hanning(samples.size).astype(np.float32)
+    magnitude = np.abs(np.fft.rfft(samples * window)) / (window.sum() / 2)
+    freqs = np.fft.rfftfreq(samples.size, 1 / SAMPLE_RATE)
+    edges = np.geomspace(_LOW_HZ, _HIGH_HZ, bands + 1)
+    out = []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        sel = magnitude[(freqs >= lo) & (freqs < hi)]
+        if sel.size == 0:  # narrower than one FFT bin: take the nearest bin
+            sel = magnitude[[int(np.argmin(np.abs(freqs - (lo + hi) / 2)))]]
+        db = 20 * np.log10(max(float(np.sqrt(np.mean(sel**2))), 1e-9))
+        out.append(round(min(max((db - floor_db) / (ceiling_db - floor_db), 0.0), 1.0), 3))
+    return out
+
+
 def loudness(pcm: bytes, floor_db: float = -60.0, ceiling_db: float = -10.0) -> float:
     """0–1 perceptual level for the UI waveform: RMS in dBFS mapped linearly between floor and ceiling."""
     samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0

@@ -17,7 +17,7 @@ function handle(raw: string): void {
   } catch {
     return
   }
-  if (msg.type === 'level') pushLevel(msg.rms, msg.source)
+  if (msg.type === 'level') pushLevel(msg.rms, msg.source, msg.bands)
   else useNexus.getState().apply(msg)
 }
 
