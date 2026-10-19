@@ -381,7 +381,7 @@ AI Smart Home Assistant
 | # | ผู้กระทำ | การกระทำ / ข้อมูล | UI ที่เห็น | AI State | Timeout / กรณีล้มเหลว |
 |---|---|---|---|---|---|
 | 1 | ผู้ใช้ | กด/ค้างปุ่มไมค์ (หรือ Space) | ปุ่มไมค์ Glow, ขอ Permission ครั้งแรก | IDLE → LISTENING | Permission denied → ดูข้อ 9 |
-| 2 | Browser | เปิด Mic, วัดระดับเสียง | Core เต้นตามเสียง, Waveform สด, interim transcript | LISTENING | เงียบ > 6s → ยกเลิก กลับ IDLE + "ไม่ได้ยินเสียง" |
+| 2 | Browser | เปิด Mic, วัดระดับเสียง | Core เต้นตามเสียง, Waveform สด, interim transcript | LISTENING | เงียบ → กลับ IDLE เงียบ ๆ (v0.5: ไม่มีเสียงขอโทษ/ไม่ได้ยิน — เคยทำให้เกิดลูปจากเสียงสะท้อน) |
 | 3 | ผู้ใช้ | ปล่อยปุ่ม / หยุดพูด (VAD) | Waveform แบนลง | → TRANSCRIBING | — |
 | 4 | STT | ได้ข้อความ final "เปิดไฟห้องหลัก" | Bubble ผู้ใช้ (ป้าย 🎤 จากเสียง) | TRANSCRIBING | STT ล้ม/ว่าง → ERROR "ฟังไม่ชัด ลองอีกครั้ง" |
 | 5 | Frontend → Backend | `POST /api/chat` หรือ WS `chat.send` พร้อม `session_id` | — | → THINKING | ไม่มีเน็ต/Backend down → DISCONNECTED |

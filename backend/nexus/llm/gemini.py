@@ -4,7 +4,7 @@ the assistant executes tools itself so every call passes the validator and the d
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 
 import httpx
 from google import genai
@@ -52,26 +52,52 @@ class GeminiProvider:
             ]
         )
 
+    def _config(self, system: str, tools: Sequence[ToolSpec]) -> types.GenerateContentConfig:
+        return types.GenerateContentConfig(
+            system_instruction=system,
+            tools=[self._to_tool(tools)] if tools else None,
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+        )
+
     async def generate(
         self,
         system: str,
         messages: Sequence[ChatMessage],
         tools: Sequence[ToolSpec],
     ) -> LLMResponse:
-        config = types.GenerateContentConfig(
-            system_instruction=system,
-            tools=[self._to_tool(tools)] if tools else None,
-            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-        )
+        response: LLMResponse | None = None
+        async for event in self.generate_stream(system, messages, tools):
+            if isinstance(event, LLMResponse):
+                response = event
+        assert response is not None
+        return response
+
+    async def generate_stream(
+        self,
+        system: str,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolSpec],
+    ) -> AsyncIterator[str | LLMResponse]:
+        """Yield text deltas as Gemini produces them, then the full LLMResponse (with every part kept,
+        so thought signatures on function calls are replayed exactly)."""
+        parts: list[types.Part] = []
+        finish_reason = None
         try:
-            response = await asyncio.wait_for(
-                self._client.aio.models.generate_content(
+            async with asyncio.timeout(self._timeout_s):
+                stream = await self._client.aio.models.generate_content_stream(
                     model=self.model,
                     contents=[self._to_content(m) for m in messages],
-                    config=config,
-                ),
-                self._timeout_s,
-            )
+                    config=self._config(system, tools),
+                )
+                async for chunk in stream:
+                    candidate = chunk.candidates[0] if chunk.candidates else None
+                    if candidate is None:
+                        continue
+                    finish_reason = candidate.finish_reason or finish_reason
+                    for part in (candidate.content.parts if candidate.content else None) or []:
+                        parts.append(part)
+                        if part.text and not part.thought:
+                            yield part.text
         except TimeoutError as e:
             raise LLMError("timeout", f"Gemini ไม่ตอบภายใน {self._timeout_s:g} วินาที") from e
         except errors.APIError as e:
@@ -79,9 +105,6 @@ class GeminiProvider:
         except httpx.HTTPError as e:
             raise LLMError("unavailable", f"เชื่อมต่อ Gemini ไม่ได้: {e}") from e
 
-        candidate = response.candidates[0] if response.candidates else None
-        content = candidate.content if candidate else None
-        parts = (content.parts if content else None) or []
         text = "".join(p.text for p in parts if p.text and not p.thought).strip()
         calls = [
             ToolCall(id=p.function_call.id, name=p.function_call.name or "", args=dict(p.function_call.args or {}))
@@ -89,9 +112,8 @@ class GeminiProvider:
             if p.function_call
         ]
         if not text and not calls:
-            reason = candidate.finish_reason if candidate else "no candidates"
-            raise LLMError("bad_request", f"Gemini ไม่ได้ส่งคำตอบกลับมา (finish_reason={reason})")
-        return LLMResponse(text=text, tool_calls=calls, raw=content)
+            raise LLMError("bad_request", f"Gemini ไม่ได้ส่งคำตอบกลับมา (finish_reason={finish_reason})")
+        yield LLMResponse(text=text, tool_calls=calls, raw=types.Content(role="model", parts=parts))
 
     async def list_models(self) -> list[str]:
         """Model names usable with generateContent — use this to pick LLM_MODEL instead of guessing."""

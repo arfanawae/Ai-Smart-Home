@@ -24,7 +24,9 @@ class VadConfig:
     aggressiveness: int = 2  # webrtcvad 0 (lenient) … 3 (strict)
     start_window_frames: int = 10  # look at the last 300 ms…
     start_voiced_frames: int = 6  # …and start when ≥ 180 ms of it is speech
-    end_silence_ms: int = 800
+    # 600 ms (was 800): with streaming STT this wait is most of the delay after the user stops talking.
+    # Shorter risks cutting people who pause mid-sentence; tune with VAD_END_SILENCE_MS on real voices.
+    end_silence_ms: int = 600
     pre_roll_ms: int = 300
     max_utterance_ms: int = 15_000
 
@@ -41,6 +43,15 @@ class UtteranceSegmenter:
         self._buffer: list[bytes] = []
         self._silence_frames = 0
         self.in_speech = False
+
+    @property
+    def hearing_voice(self) -> bool:
+        """Any voiced frame in the start window — speech may be starting but is not confirmed yet."""
+        return self.in_speech or any(self._window)
+
+    def buffered(self) -> bytes:
+        """Audio of the utterance so far (pre-roll included) — fed to streaming STT at speech start."""
+        return b"".join(self._buffer)
 
     def reset(self) -> None:
         self._pre_roll.clear()

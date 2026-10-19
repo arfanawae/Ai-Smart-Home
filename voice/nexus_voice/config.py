@@ -9,6 +9,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from .speech import DEFAULT_VOICES, ENGLISH, THAI, LanguageMode
+from .vad import VadConfig
 
 REPO_DIR = Path(__file__).resolve().parents[2]
 ENV_FILE = REPO_DIR / "backend" / ".env"
@@ -23,6 +24,8 @@ class VoiceSettings:
     tts_voices: dict[str, str]
     input_device: int | None
     output_device: int | None
+    vad_end_silence_ms: int
+    conversation_window_s: float
 
 
 def _optional_int(name: str) -> int | None:
@@ -50,4 +53,6 @@ def load_settings() -> VoiceSettings:
         tts_voices={THAI: thai_voice, ENGLISH: _env("AZURE_TTS_VOICE_EN", DEFAULT_VOICES[ENGLISH])},
         input_device=_optional_int("AUDIO_INPUT_DEVICE"),
         output_device=_optional_int("AUDIO_OUTPUT_DEVICE"),
+        vad_end_silence_ms=_optional_int("VAD_END_SILENCE_MS") or VadConfig().end_silence_ms,
+        conversation_window_s=float(_env("CONVERSATION_WINDOW_S", "15")),
     )

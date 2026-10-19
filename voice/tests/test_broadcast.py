@@ -114,3 +114,96 @@ def test_stop_delivers_queued_events_first():
 
 def test_listens_on_localhost_only_by_default():
     assert EventBroadcaster()._host == "127.0.0.1"
+
+
+# ── client → server messages (M2) ───────────────────────────────────────────────────────────
+import pytest
+
+from nexus_voice.broadcast import InvalidMessage, parse_client_message
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ('{"type": "text", "text": "  เปิดไฟ  "}', {"type": "text", "text": "เปิดไฟ"}),
+        (
+            '{"type": "command", "tool": "set_brightness", "args": {"device_id": "main_light", "level": 30}}',
+            {"type": "command", "tool": "set_brightness", "args": {"device_id": "main_light", "level": 30}},
+        ),
+    ],
+)
+def test_parse_valid_messages(raw, expected):
+    assert parse_client_message(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "not json",
+        "[1, 2]",
+        '{"type": "shell", "cmd": "rm -rf /"}',
+        '{"type": "text", "text": ""}',
+        '{"type": "text", "text": 42}',
+        '{"type": "text", "text": "' + "ก" * 501 + '"}',
+        '{"type": "command", "tool": 5}',
+        '{"type": "command", "tool": "turn_light_on", "args": "main_light"}',
+        b'{"type": "text", "text": "hi"}',
+    ],
+)
+def test_parse_rejects_everything_else(raw):
+    with pytest.raises(InvalidMessage):
+        parse_client_message(raw)
+
+
+def test_client_messages_reach_the_handler_and_errors_go_back():
+    async def go():
+        received = []
+
+        async def handler(message):
+            received.append(message)
+
+        hub = EventBroadcaster(port=0, on_message=handler)
+        await hub.start()
+        async with connect(f"ws://127.0.0.1:{hub.port}") as ws:
+            await recv(ws)
+            await ws.send('{"type": "text", "text": "สวัสดี"}')
+            await ws.send('{"type": "nope"}')
+            error = await recv(ws)
+            assert error["type"] == "error"
+            for _ in range(50):
+                if received:
+                    break
+                await asyncio.sleep(0.02)
+        await hub.stop()
+        assert received == [{"type": "text", "text": "สวัสดี"}]
+
+    run(go())
+
+
+def test_read_only_server_says_so():
+    async def go():
+        hub = EventBroadcaster(port=0)
+        await hub.start()
+        async with connect(f"ws://127.0.0.1:{hub.port}") as ws:
+            await recv(ws)
+            await ws.send('{"type": "text", "text": "hi"}')
+            assert (await recv(ws))["message"] == "this server is read-only"
+        await hub.stop()
+
+    run(go())
+
+
+def test_levels_are_clamped_and_not_kept_for_late_joiners():
+    async def go():
+        hub = EventBroadcaster(port=0)
+        await hub.start()
+        async with connect(f"ws://127.0.0.1:{hub.port}") as ws:
+            await recv(ws)
+            hub.publish_level(1.7, "mic")
+            level = await recv(ws)
+            assert level == {"type": "level", "rms": 1.0, "source": "mic"}
+        async with connect(f"ws://127.0.0.1:{hub.port}") as ws:
+            assert "level" not in (await recv(ws))
+        await hub.stop()
+
+    run(go())

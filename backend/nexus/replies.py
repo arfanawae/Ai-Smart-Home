@@ -24,22 +24,113 @@ def action_th(result: CommandResult) -> str:
     return template.format(device=device, level=result.args.get("level", "?"))
 
 
-def describe_result(result: CommandResult) -> str:
+_ACTION_EN = {
+    "turn_light_on": "turn the main light on",
+    "turn_light_off": "turn the main light off",
+    "set_brightness": "set the main light to {level}%",
+    "adjust_brightness": "adjust the main light's brightness",
+    "get_device_status": "check the main light",
+}
+
+
+def _state_en(result: CommandResult) -> str:
+    state = result.reported
+    if state is None:
+        return ""
+    if not state.online:
+        return "The main light is offline."
+    return f"The main light is on at {state.brightness}%." if state.on else "The main light is off."
+
+
+def _level_th(result: CommandResult) -> str:
+    """Brightness changes say the level the device reported; on/off needs no extra words."""
+    if result.tool in ("set_brightness", "adjust_brightness") and result.reported and result.reported.on:
+        return f" ตอนนี้ความสว่าง {result.reported.brightness}%"
+    return ""
+
+
+def _now_en(result: CommandResult) -> str:
+    state = result.reported
+    if state is None:
+        return "Done."
+    if not state.on:
+        return "The main light is now off."
+    if result.tool == "turn_light_on":
+        return "The main light is now on."
+    return f"The main light is now at {state.brightness}%."
+
+
+# Spoken the moment a device command is about to be sent (two-step feedback). Always "in progress",
+# never "done": the confirmation comes only from the device's reported state.
+_ACK = {
+    "th": {
+        "turn_light_on": "ได้ครับ เดี๋ยวผมเปิดไฟให้ครับ",
+        "turn_light_off": "ได้ครับ เดี๋ยวผมปิดไฟให้ครับ",
+        "set_brightness": "ได้ครับ เดี๋ยวผมปรับความสว่างเป็น {level} เปอร์เซ็นต์ให้ครับ",
+        "adjust_down": "ได้ครับ เดี๋ยวผมหรี่ไฟให้ครับ",
+        "adjust_up": "ได้ครับ เดี๋ยวผมเพิ่มความสว่างให้ครับ",
+    },
+    "en": {
+        "turn_light_on": "Got it, turning on the light.",
+        "turn_light_off": "Got it, turning off the light.",
+        "set_brightness": "Got it, setting the light to {level} percent.",
+        "adjust_down": "Got it, dimming the light.",
+        "adjust_up": "Got it, brightening the light.",
+    },
+}
+
+
+def acknowledgement(tool: str, args: dict, language: Language) -> str | None:
+    if tool == "adjust_brightness":
+        key = "adjust_down" if int(args.get("delta", 0) or 0) < 0 else "adjust_up"
+    else:
+        key = tool
+    template = _ACK[language].get(key)
+    return template.format(level=args.get("level", "?")) if template else None
+
+
+def describe_result(result: CommandResult, language: Language = "th") -> str:
+    """Fast-path reply. Every success says whether it was simulated or confirmed by a real device."""
+    if language == "en":
+        return _describe_en(result)
     action = action_th(result)
-    state = f" ตอนนี้{DEVICE_NAMES_TH.get(result.device_id or '', 'อุปกรณ์')}{result.reported.describe_th()}" if result.reported else ""
+    device = DEVICE_NAMES_TH.get(result.device_id or "", "อุปกรณ์")
+    state = f" ตอนนี้{device}{result.reported.describe_th()}" if result.reported else ""
     match result.status:
         case CommandStatus.SUCCEEDED if result.tool == "get_device_status":
-            prefix = "จำลอง: " if result.simulated else ""
-            return f"{prefix}{state.strip()}ครับ" if state else "ไม่ทราบสถานะครับ"
+            if not result.reported:
+                return "ไม่ทราบสถานะครับ"
+            now = result.reported
+            status = "ออฟไลน์" if not now.online else (f"เปิดอยู่ {now.brightness}%" if now.on else "ปิดอยู่")
+            return f"ตอนนี้{device}{status}ครับ{' (จำลอง)' if result.simulated else ''}"
         case CommandStatus.SUCCEEDED if result.simulated:
-            return f"จำลองการ{action}แล้วครับ{state} {SIMULATION_TAG}"
+            return f"จำลองการ{action}เรียบร้อยแล้วครับ{_level_th(result)} {SIMULATION_TAG}"
         case CommandStatus.SUCCEEDED:
-            return f"{action}แล้วครับ (ยืนยันจากอุปกรณ์){state}"
+            return f"{action}เรียบร้อยแล้วครับ{_level_th(result)}"
         case CommandStatus.REJECTED:
             return f"ทำคำสั่ง{action}ไม่ได้ครับ: {result.error}"
         case CommandStatus.TIMEOUT:
             return f"ส่งคำสั่ง{action}แล้ว แต่อุปกรณ์ไม่ตอบกลับครับ สถานะไฟตอนนี้ไม่แน่ชัด"
     return f"{action}ไม่สำเร็จครับ: {result.error}"
+
+
+def _describe_en(result: CommandResult) -> str:
+    action = _ACTION_EN.get(result.tool, result.tool).format(level=result.args.get("level", "?"))
+    state = _state_en(result)
+    match result.status:
+        case CommandStatus.SUCCEEDED if result.tool == "get_device_status":
+            return f"{state} (simulated)" if result.simulated and state else state or "I don't know its state."
+        case CommandStatus.SUCCEEDED if result.simulated:
+            return f"Simulated: {_now_en(result)} {MESSAGES['en']['simulation_tag']}"
+        case CommandStatus.SUCCEEDED:
+            return _now_en(result)
+        case CommandStatus.REJECTED:
+            if result.tool == "set_brightness":
+                return "Brightness must be a whole number from 0 to 100 percent."
+            return f"I can't {action} right now."
+        case CommandStatus.TIMEOUT:
+            return "I sent the command, but the device didn't answer, so the light's state is uncertain."
+    return f"I couldn't {action}: the device reported a problem."
 
 
 # System messages in the user's language. (The fast path only matches Thai, so describe_result stays Thai.)

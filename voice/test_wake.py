@@ -120,7 +120,7 @@ def live(azure: AzureSpeech, trigger: str, echo: bool, input_device: int | None,
             stt = azure.transcribe(utterance)
             if stt.status != "ok":
                 print(f"   ✗ {stt.error}")
-                say(sounds.load_prompt("not_heard", language))
+                # no apology prompt: unheard speech is ignored quietly (see nexus_voice/loop.py)
             else:
                 language = stt.language or THAI
                 text = correct(stt.text)

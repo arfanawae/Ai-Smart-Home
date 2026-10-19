@@ -17,8 +17,8 @@ def test_one_utterance_with_pre_roll():
     sequence = [SILENCE] * 20 + [SPEECH] * 30 + [SILENCE] * 30
     [utterance] = feed(seg, sequence)
     n_frames = len(utterance) // FRAME_BYTES
-    # pre-roll (10 frames) + speech after trigger + ≥ 800 ms of trailing silence (27 frames = 810 ms)
-    assert n_frames == 10 + (30 - 6) + -(-800 // FRAME_MS)
+    # pre-roll (10 frames) + speech after trigger + at least end_silence_ms of trailing silence
+    assert n_frames == 10 + (30 - 6) + -(-VadConfig().end_silence_ms // FRAME_MS)
     assert utterance.startswith(SILENCE * 4)  # pre-roll keeps the moment before speech was confirmed
 
 
@@ -48,3 +48,11 @@ def test_max_length_cuts_a_never_ending_utterance():
 
 def test_frames_splits_whole_frames_only():
     assert len(frames(b"\x00" * (FRAME_BYTES * 3 + 100))) == 3
+
+
+def test_hearing_voice_before_speech_is_confirmed():
+    seg = segmenter()
+    feed(seg, [SILENCE] * 5 + [SPEECH] * 2)
+    assert not seg.in_speech and seg.hearing_voice
+    feed(seg, [SILENCE] * 10)
+    assert not seg.hearing_voice

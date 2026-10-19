@@ -1,8 +1,10 @@
-"""Run NEXUS by voice.
+"""Run NEXUS.
 
-    python -m nexus_voice              ไมค์จริง: "Nexus" → สั่งงาน → NEXUS ตอบด้วยเสียง (อุปกรณ์จำลอง)
-    python -m nexus_voice simulate     ทดสอบทั้งลูปโดยไม่ใช้ไมค์: สร้างเสียง "Nexus" + คำสั่งด้วย Azure TTS
-                                       แล้วป้อนเข้าลูปทีละเฟรม (ไม่เล่นเสียงออกลำโพง)
+    python -m nexus_voice              เสียงจริง: "Nexus" → สั่งงาน → NEXUS ตอบด้วยเสียง + ฟีดหน้าเว็บ
+    python -m nexus_voice serve        ไม่ใช้ไมค์/Azure: เปิดเฉพาะฟีดหน้าเว็บ (พิมพ์คุยและกดควบคุมไฟจากเว็บได้)
+    python -m nexus_voice simulate     ทดสอบทั้งลูปเสียงโดยไม่ใช้ไมค์: ป้อนเสียงสังเคราะห์จาก Azure TTS
+
+ทุกโหมดใช้อุปกรณ์จำลอง (MOCK) และเปิดฟีดที่ ws://127.0.0.1:8765 ให้หน้าเว็บ (frontend/)
 """
 
 from __future__ import annotations
@@ -11,17 +13,23 @@ import asyncio
 import os
 import sys
 
+from typing import Any
+
+from collections.abc import AsyncIterator
+
 import sounddevice as sd
+from nexus.assistant import Assistant
 from nexus.cli import BOLD, CYAN, DIM, RESET, YELLOW, build_assistant, print_event
+from nexus.config import Settings as BackendSettings
 from nexus.config import load_settings as load_backend_settings
-from nexus.events import AIState, Event, StateChanged
+from nexus.events import AIState, Event, StateChanged, UserMessage
 
 from . import audio_io
-from .broadcast import DEFAULT_HOST, EventBroadcaster
+from .broadcast import DEFAULT_HOST, DEFAULT_PORT, EventBroadcaster
 from .config import VoiceSettings, load_settings
 from .loop import Player, VoiceLoop
 from .speech import ENGLISH, THAI, AzureSpeech
-from .vad import FRAME_SAMPLES, frames
+from .vad import FRAME_SAMPLES, UtteranceSegmenter, VadConfig, frames
 from .wakeword import VoskWakeWord
 
 _ICONS = {
@@ -31,6 +39,9 @@ _ICONS = {
     AIState.TRANSCRIBING: "📝",
     AIState.SPEAKING: "🔊",
 }
+LEVEL_EVERY_FRAMES = 2  # mic level to the UI every 60 ms
+PLAYBACK_PIECE_BYTES = audio_io.SAMPLE_RATE * audio_io.SAMPLE_WIDTH * 60 // 1000  # 60 ms
+RESULT_FLASH_S = 0.9  # how long SUCCESS/ERROR shows before the core returns to SPEAKING
 
 SIMULATION_SCRIPT = [
     (ENGLISH, "Hey NEXUS."),
@@ -45,52 +56,143 @@ def show(event: Event) -> None:
     if isinstance(event, StateChanged) and event.state in _ICONS:
         extra = f" · {event.detail}" if event.detail else ""
         print(f"{_ICONS[event.state]} {DIM}{event.state.value}{extra}{RESET}")
+    elif isinstance(event, UserMessage) and event.source == "text":
+        print(f"{BOLD}คุณ ⌨{RESET} {event.text}")
     else:
         print_event(event)
 
 
-async def build(play: Player | None = None) -> tuple[VoiceLoop, AzureSpeech, VoiceSettings, EventBroadcaster]:
+class Core:
+    """Assistant + UI feed, shared by every mode."""
+
+    def __init__(self, backend: BackendSettings, languages: list[str]) -> None:
+        self.backend = backend
+        self.voice_loop: VoiceLoop | None = None
+        self.broadcaster = EventBroadcaster(
+            # NEXUS_WS_PORT lets tests run a second instance without touching the one you are using
+            port=int(os.getenv("NEXUS_WS_PORT", DEFAULT_PORT)),
+            on_message=self.on_client_message,
+            simulated=True,
+            llm=backend.llm_model if backend.gemini_api_key else None,
+            languages=languages,
+        )
+        self.assistant: Assistant
+        self.assistant, self._driver = build_assistant(backend, emit=self.emit_from_assistant)
+
+    async def start(self) -> None:
+        self.broadcaster.set_device("main_light", (await self._driver.get_state("main_light")).to_dict())
+        await self.broadcaster.start()
+
+    def emit(self, event: Event) -> None:
+        show(event)
+        self.broadcaster.publish(event)
+
+    def emit_from_assistant(self, event: Event) -> None:
+        loop = self.voice_loop
+        if loop and isinstance(event, StateChanged):
+            # The assistant ends every turn with IDLE; with a voice loop running, the loop owns IDLE.
+            if event.state == AIState.IDLE:
+                return
+            # Replies are spoken while the turn finishes, so SUCCESS/ERROR can arrive mid-sentence:
+            # show it briefly, then return to SPEAKING so the core keeps moving with the voice.
+            if loop.speaking and event.state in (AIState.SUCCESS, AIState.ERROR):
+                self.emit(event)
+                asyncio.get_running_loop().call_later(RESULT_FLASH_S, self._back_to_speaking)
+                return
+        self.emit(event)
+
+    def _back_to_speaking(self) -> None:
+        if self.voice_loop and self.voice_loop.speaking:
+            self.emit(StateChanged(AIState.SPEAKING))
+
+    async def on_client_message(self, message: dict[str, Any]) -> None:
+        if message["type"] == "text":
+            self.emit(UserMessage(message["text"], "text"))
+            await self.assistant.handle(message["text"])  # typed turns are answered in text, not spoken
+            if self.voice_loop:  # put the UI back on what the voice loop is actually doing
+                self.emit(StateChanged(self.voice_loop.state))
+        elif message["type"] == "command":
+            await self.assistant.run_manual(message["tool"], message["args"])
+
+
+async def start_core(languages: list[str]) -> Core:
+    core = Core(load_backend_settings(), languages)
+    try:
+        await core.start()
+    except OSError as e:
+        port = os.getenv("NEXUS_WS_PORT", DEFAULT_PORT)
+        sys.exit(
+            f"เปิดฟีดหน้าเว็บที่พอร์ต {port} ไม่ได้ ({e.strerror or e}) — "
+            "มี NEXUS อีกตัวเปิดอยู่แล้วหรือไม่? ปิดตัวเดิมก่อน หรือใช้พอร์ตอื่นด้วย NEXUS_WS_PORT"
+        )
+    return core
+
+
+def banner(core: Core, mode: str, voice: VoiceSettings | None) -> None:
+    print(f"{CYAN}{BOLD}N E X U S{RESET}  {DIM}{mode}{RESET}")
+    llm = f"Gemini · {core.backend.llm_model}" if core.assistant.llm else f"{YELLOW}ไม่มี (Fast path อย่างเดียว){RESET}"
+    stt = f" · STT: {' + '.join(voice.stt_languages)}" if voice else ""
+    print(f"  อุปกรณ์: {YELLOW}โหมดจำลอง (MOCK){RESET} · LLM: {llm}{stt}")
+    print(f"  หน้าเว็บ: ws://{DEFAULT_HOST}:{core.broadcaster.port}  (cd frontend && npm run dev)")
+
+
+async def start_voice(play: Player | None = None) -> tuple[Core, VoiceLoop, AzureSpeech, VoiceSettings]:
     voice = load_settings()
     if not (voice.azure_key and voice.azure_region):
-        sys.exit("ยังไม่ได้ใส่ AZURE_SPEECH_KEY / AZURE_SPEECH_REGION ใน backend/.env")
-    backend = load_backend_settings()
-    broadcaster = EventBroadcaster(
-        simulated=True, llm=backend.llm_model if backend.gemini_api_key else None, languages=list(voice.stt_languages)
+        sys.exit("ยังไม่ได้ใส่ AZURE_SPEECH_KEY / AZURE_SPEECH_REGION ใน backend/.env (หรือใช้โหมด serve)")
+    core = await start_core(list(voice.stt_languages))
+    azure = AzureSpeech(
+        voice.azure_key, voice.azure_region, voice.stt_languages, voice.tts_voices, voice.stt_language_mode,
+        segmentation_silence_ms=voice.vad_end_silence_ms,
     )
+    await asyncio.to_thread(azure.warm_up)  # open the TTS connections now, not on the first reply
 
-    def emit(event: Event) -> None:
-        show(event)
-        broadcaster.publish(event)
+    async def speaker(chunks: AsyncIterator[bytes]) -> None:
+        """Play audio as it arrives. write() returns as soon as the sound card's buffer has room, i.e.
+        before the audio is heard — so each piece's level is scheduled for the moment it will actually
+        play, keeping the UI's core and waveform in step with the voice."""
+        aio = asyncio.get_running_loop()
+        out = sd.RawOutputStream(samplerate=audio_io.SAMPLE_RATE, channels=1, dtype="int16", device=voice.output_device)
+        out.start()
+        heard_at = aio.time() + out.latency  # when the next written sample reaches the speaker
+        try:
+            async for chunk in chunks:
+                for i in range(0, len(chunk), PLAYBACK_PIECE_BYTES):
+                    piece = chunk[i : i + PLAYBACK_PIECE_BYTES]
+                    heard_at = max(heard_at, aio.time() + out.latency)  # a gap (e.g. between sentences)
+                    aio.call_at(heard_at, core.broadcaster.publish_level, audio_io.loudness(piece), "tts")
+                    heard_at += len(piece) / (audio_io.SAMPLE_RATE * audio_io.SAMPLE_WIDTH)
+                    await asyncio.to_thread(out.write, piece)
+        finally:
+            await asyncio.to_thread(out.stop)  # waits for the buffered audio to finish playing
+            out.close()
+            aio.call_at(max(heard_at, aio.time()), core.broadcaster.publish_level, 0.0, "tts")
 
-    def emit_from_assistant(event: Event) -> None:
-        # The assistant ends every turn with IDLE, but in voice mode the loop owns IDLE (it keeps listening).
-        if not (isinstance(event, StateChanged) and event.state == AIState.IDLE):
-            emit(event)
-
-    assistant, driver = build_assistant(backend, emit=emit_from_assistant)
-    broadcaster.set_device("main_light", (await driver.get_state("main_light")).to_dict())
-    await broadcaster.start()
-    azure = AzureSpeech(voice.azure_key, voice.azure_region, voice.stt_languages, voice.tts_voices, voice.stt_language_mode)
-
-    async def speaker(pcm: bytes) -> None:
-        await asyncio.to_thread(audio_io.play, pcm, voice.output_device)
-
-    loop = VoiceLoop(assistant, azure, azure, VoskWakeWord(), play or speaker, emit)
-    print(f"{CYAN}{BOLD}N E X U S{RESET}  {DIM}Voice · M1{RESET}")
-    llm = f"Gemini · {backend.llm_model}" if assistant.llm else f"{YELLOW}ไม่มี (Fast path อย่างเดียว){RESET}"
-    print(f"  อุปกรณ์: {YELLOW}โหมดจำลอง (MOCK){RESET} · LLM: {llm} · STT: {' + '.join(voice.stt_languages)}")
-    print(f"  UI feed: ws://{DEFAULT_HOST}:{broadcaster.port}")
-    return loop, azure, voice, broadcaster
+    segmenter = UtteranceSegmenter(VadConfig(end_silence_ms=voice.vad_end_silence_ms))
+    loop = VoiceLoop(
+        core.assistant, azure, azure, VoskWakeWord(), play or speaker, core.emit,
+        segmenter=segmenter, window_s=voice.conversation_window_s,
+    )
+    core.voice_loop = loop
+    return core, loop, azure, voice
 
 
 async def run_live() -> None:
-    loop, _azure, voice, _broadcaster = await build()
+    core, loop, _azure, voice = await start_voice()
+    banner(core, "Voice · M2", voice)
     aio = asyncio.get_running_loop()
     frames_in: asyncio.Queue[bytes] = asyncio.Queue()
+    counter = 0
 
     def on_audio(data, _frames, _time, _status) -> None:
-        if not loop.speaking:  # half-duplex: ignore the mic while NEXUS talks
-            aio.call_soon_threadsafe(frames_in.put_nowait, bytes(data))
+        nonlocal counter
+        if loop.speaking:  # half-duplex: ignore the mic while NEXUS talks
+            return
+        frame = bytes(data)
+        aio.call_soon_threadsafe(frames_in.put_nowait, frame)
+        counter += 1
+        if counter % LEVEL_EVERY_FRAMES == 0:
+            aio.call_soon_threadsafe(core.broadcaster.publish_level, audio_io.loudness(frame), "mic")
 
     with sd.RawInputStream(
         samplerate=audio_io.SAMPLE_RATE,
@@ -100,27 +202,41 @@ async def run_live() -> None:
         device=voice.input_device,
         callback=on_audio,
     ):
-        show(StateChanged(AIState.IDLE, 'พูด "Nexus" แล้วเว้นจังหวะสั้น ๆ ก่อนสั่งงาน (Ctrl+C เพื่อออก)'))
+        core.emit(StateChanged(AIState.IDLE, 'พูด "Nexus" แล้วเว้นจังหวะสั้น ๆ ก่อนสั่งงาน (Ctrl+C เพื่อออก)'))
+        spoken = loop.utterances_spoken
         while True:
             await loop.process_frame(await frames_in.get())
+            if loop.utterances_spoken != spoken:  # NEXUS just finished speaking: drop stale mic audio
+                spoken = loop.utterances_spoken
+                while not frames_in.empty():
+                    frames_in.get_nowait()
+
+
+async def run_serve() -> None:
+    core = await start_core([])
+    banner(core, "Serve · ไม่มีระบบเสียง", None)
+    core.emit(StateChanged(AIState.IDLE, "โหมด serve — พิมพ์คุยหรือกดควบคุมไฟจากหน้าเว็บ"))
+    await asyncio.Event().wait()
 
 
 async def run_simulation() -> None:
     """End-to-end check without a microphone: synthetic speech in, assistant + TTS out (not played)."""
     spoken: list[bytes] = []
 
-    async def capture(pcm: bytes) -> None:
-        spoken.append(pcm)
+    async def capture(chunks: AsyncIterator[bytes]) -> None:
+        spoken.append(b"".join([c async for c in chunks]))
 
-    loop, azure, _voice, broadcaster = await build(play=capture)
+    core, loop, azure, voice = await start_voice(play=capture)
+    banner(core, "Simulate", voice)
     pause = b"\x00" * (audio_io.SAMPLE_RATE * audio_io.SAMPLE_WIDTH)  # 1 s
     for language, sentence in SIMULATION_SCRIPT:
         print(f"\n{DIM}── ป้อนเสียงจำลอง: [{language}] {sentence}{RESET}")
         tts = azure.synthesize(sentence, language)
         for frame in frames(pause + tts.pcm + pause):
             await loop.process_frame(frame)
+            await asyncio.sleep(0)  # let the UI feed flush between frames
     print(f"\n{DIM}NEXUS พูดออกไปทั้งหมด {len(spoken)} ครั้ง (ไม่ได้เล่นออกลำโพง) · สถานะสุดท้าย {loop.state.value}{RESET}")
-    await broadcaster.stop()
+    await core.broadcaster.stop()
 
 
 def main() -> None:
@@ -129,8 +245,11 @@ def main() -> None:
     for stream in (sys.stdin, sys.stdout, sys.stderr):
         stream.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
     command = sys.argv[1] if len(sys.argv) > 1 else "live"
+    runners = {"live": run_live, "serve": run_serve, "simulate": run_simulation}
+    if command not in runners:
+        sys.exit(f"ใช้งาน: python -m nexus_voice [{'|'.join(runners)}]")
     try:
-        asyncio.run(run_simulation() if command == "simulate" else run_live())
+        asyncio.run(runners[command]())
     except KeyboardInterrupt:
         print("\nลาก่อนครับ")
 

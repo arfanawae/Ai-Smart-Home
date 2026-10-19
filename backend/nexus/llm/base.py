@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
@@ -58,3 +58,19 @@ class LLMProvider(Protocol):
         messages: Sequence[ChatMessage],
         tools: Sequence[ToolSpec],
     ) -> LLMResponse: ...
+
+
+async def stream_reply(
+    llm: LLMProvider, system: str, messages: Sequence[ChatMessage], tools: Sequence[ToolSpec]
+) -> AsyncIterator[str | LLMResponse]:
+    """Text deltas as they are generated, then the complete LLMResponse last.
+    Providers without a `generate_stream` method yield their whole text as one delta."""
+    stream = getattr(llm, "generate_stream", None)
+    if stream is not None:
+        async for event in stream(system, messages, tools):
+            yield event
+        return
+    response = await llm.generate(system, messages, tools)
+    if response.text:
+        yield response.text
+    yield response

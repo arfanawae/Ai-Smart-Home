@@ -95,3 +95,43 @@ def test_missing_english_prompt_falls_back_to_thai(monkeypatch, tmp_path):
 
 def test_every_prompt_exists_in_both_languages():
     assert sounds.PROMPTS[THAI].keys() == sounds.PROMPTS[ENGLISH].keys()
+
+
+# ── LID: script share (real numbers from the 2026-10-19 short-phrase experiment) ─────────────
+def test_thai_result_written_in_latin_counts_as_weak_thai():
+    # English "Dim it." — th model wrote "Demat" (0.35); without the script check Thai won by bias
+    thai = STTResult("ok", "Demat", THAI, 0.35)
+    english = STTResult("ok", "Dim it.", ENGLISH, 0.42)
+    assert pick(thai, english) is english
+
+
+def test_short_english_words_win_over_latin_thai_output():
+    assert pick(STTResult("ok", "Yes", THAI, 0.39), STTResult("ok", "Yes.", ENGLISH, 0.85)).language == ENGLISH
+    assert pick(STTResult("ok", "No", THAI, 0.28), STTResult("ok", "No.", ENGLISH, 0.92)).language == ENGLISH
+
+
+def test_short_thai_words_still_win():
+    assert pick(STTResult("ok", "ขอบคุณ", THAI, 0.44), STTResult("ok", "Kopkun.", ENGLISH, 0.06)).language == THAI
+    assert pick(STTResult("ok", "ไม่", THAI, 0.36), STTResult("ok", "My.", ENGLISH, 0.05)).language == THAI
+    assert pick(STTResult("ok", "โอเค", THAI, 0.65), STTResult("ok", "OK.", ENGLISH, 0.36)).language == THAI
+
+
+# ── text sanitising before TTS ───────────────────────────────────────────────────────────────
+from nexus_voice.speech import speakable  # noqa: E402
+
+
+def test_speakable_strips_emoji_symbols_and_brackets():
+    assert speakable("เปิดไฟแล้วครับ 💡✨ (การจำลอง)", THAI) == "เปิดไฟแล้วครับ การจำลอง"
+    assert speakable("Done ✅ — light at 80%!", ENGLISH) == "Done, light at 80%!"
+
+
+def test_english_voice_never_gets_thai_script():
+    assert speakable("The light is on ครับ", ENGLISH) == "The light is on"
+
+
+def test_thai_voice_keeps_english_names():
+    assert speakable("สวัสดีครับ ผมคือ NEXUS", THAI) == "สวัสดีครับ ผมคือ NEXUS"
+
+
+def test_nothing_speakable_gives_empty_text():
+    assert speakable("🎉🎉", THAI) == ""

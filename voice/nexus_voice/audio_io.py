@@ -31,6 +31,21 @@ def peak_dbfs(pcm: bytes) -> float:
     return 20 * np.log10(max(peak, 1e-9))
 
 
+def loudness(pcm: bytes, floor_db: float = -60.0, ceiling_db: float = -10.0) -> float:
+    """0–1 perceptual level for the UI waveform: RMS in dBFS mapped linearly between floor and ceiling."""
+    samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+    if samples.size == 0:
+        return 0.0
+    db = 20 * np.log10(max(float(np.sqrt(np.mean(samples**2))), 1e-9))
+    return float(min(max((db - floor_db) / (ceiling_db - floor_db), 0.0), 1.0))
+
+
+def envelope(pcm: bytes, chunk_ms: int = 60) -> list[float]:
+    """Loudness per chunk — streamed to the UI while NEXUS speaks so the waveform follows its real voice."""
+    chunk = SAMPLE_RATE * chunk_ms // 1000 * SAMPLE_WIDTH
+    return [loudness(pcm[i : i + chunk]) for i in range(0, len(pcm), chunk)]
+
+
 def save_wav(pcm: bytes, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with wave.open(str(path), "wb") as f:

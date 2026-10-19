@@ -6,6 +6,7 @@ from nexus.devices.service import DeviceService
 from nexus.events import AIState, StateChanged
 from nexus.llm.base import LLMError, LLMResponse, ToolCall
 from nexus.quota import QuotaTracker
+from nexus import replies
 from nexus.replies import COMMAND_FAILED_NOTE, NO_COMMAND_NOTE, SIMULATION_TAG
 
 
@@ -102,7 +103,7 @@ def test_false_success_after_failed_command_is_flagged(tmp_path):
     )
     assistant, _, driver = make(llm, tmp_path)
     driver.failure = "error"
-    assert COMMAND_FAILED_NOTE in asyncio.run(assistant.handle("ช่วยเปิดไฟได้ไหม")).reply
+    assert COMMAND_FAILED_NOTE in asyncio.run(assistant.handle("ช่วยดูเรื่องไฟให้หน่อย")).reply
 
 
 def test_state_description_is_not_flagged(tmp_path):
@@ -118,7 +119,7 @@ def test_failed_device_is_reported_as_error(tmp_path):
     )
     assistant, events, driver = make(llm, tmp_path)
     driver.failure = "error"
-    turn = asyncio.run(assistant.handle("ช่วยเปิดไฟได้ไหม"))
+    turn = asyncio.run(assistant.handle("ช่วยจัดการเรื่องไฟให้หน่อย"))  # not a fast-path command
     assert not turn.commands[0].ok
     assert AIState.ERROR in states(events) and AIState.SUCCESS not in states(events)
 
@@ -186,7 +187,7 @@ def test_detect_user_language():
 def test_english_user_gets_english_instruction_and_notes(tmp_path):
     llm = ScriptedLLM(LLMResponse("I've turned on the light for you.", []))
     assistant, _, _ = make(llm, tmp_path)
-    reply = asyncio.run(assistant.handle("Please turn on the light")).reply
+    reply = asyncio.run(assistant.handle("I need some light in here")).reply
     assert MESSAGES["en"]["no_command"] in reply
     # the system prompt sent to Gemini asks for English this turn
     assert "Reply in English only" in llm.systems[0]
@@ -203,5 +204,136 @@ def test_english_simulation_tag(tmp_path):
         LLMResponse("The main light is on now.", []),
     )
     assistant, _, _ = make(llm, tmp_path)
-    reply = asyncio.run(assistant.handle("Turn on the light please")).reply
+    reply = asyncio.run(assistant.handle("I could use some light in here")).reply  # LLM path
     assert reply.endswith(MESSAGES["en"]["simulation_tag"])
+
+
+# ── manual control + turn lock (web UI) ──────────────────────────────────────────────────────
+from nexus.events import CommandUpdate
+
+
+def test_manual_command_skips_llm_and_emits_update(tmp_path):
+    llm = ScriptedLLM()
+    assistant, events, driver = make(llm, tmp_path)
+    result = asyncio.run(assistant.run_manual("set_brightness", {"device_id": "main_light", "level": 40}))
+    assert result.ok and llm.calls == []
+    assert [e.route for e in events if isinstance(e, CommandUpdate)] == ["manual"]
+    assert asyncio.run(driver.get_state("main_light")).brightness == 40
+
+
+def test_manual_command_is_still_validated(tmp_path):
+    assistant, _, _ = make(None, tmp_path)
+    result = asyncio.run(assistant.run_manual("set_brightness", {"device_id": "main_light", "level": 500}))
+    assert result.status.value == "rejected"
+
+
+def test_concurrent_turns_run_one_at_a_time(tmp_path):
+    order = []
+
+    class SlowLLM(ScriptedLLM):
+        async def generate(self, system, messages, tools):
+            order.append("start")
+            await asyncio.sleep(0.05)
+            order.append("end")
+            return LLMResponse("ครับ", [])
+
+    assistant, _, _ = make(SlowLLM(), tmp_path)
+
+    async def both():
+        await asyncio.gather(assistant.handle("สวัสดี"), assistant.handle("วันนี้ร้อนจัง"))
+
+    asyncio.run(both())
+    assert order == ["start", "end", "start", "end"]
+
+
+# ── streaming speech + language context (latency work) ──────────────────────────────────────
+class StreamingLLM(ScriptedLLM):
+    """Streams each scripted response's text in small deltas, like Gemini's generate_stream."""
+
+    async def generate_stream(self, system, messages, tools):
+        response = await self.generate(system, messages, tools)
+        for i in range(0, len(response.text), 4):
+            yield response.text[i : i + 4]
+        yield response
+
+
+def test_sentences_are_spoken_while_the_reply_streams(tmp_path):
+    llm = StreamingLLM(LLMResponse("วันนี้อากาศร้อนจริงครับ ผมยังควบคุมพัดลมไม่ได้ครับ", []))
+    assistant, _, _ = make(llm, tmp_path)
+    spoken = []
+    asyncio.run(assistant.handle("วันนี้ร้อนจัง", on_speech=spoken.append))
+    assert spoken == ["วันนี้อากาศร้อนจริงครับ", "ผมยังควบคุมพัดลมไม่ได้ครับ"]
+
+
+def test_a_success_claim_is_not_spoken_before_the_device_confirms(tmp_path):
+    # The model claims success before (and without) any command: it must be held, then corrected.
+    llm = StreamingLLM(LLMResponse("เปิดไฟให้เรียบร้อยแล้วครับ", []))
+    assistant, _, _ = make(llm, tmp_path)
+    spoken = []
+    asyncio.run(assistant.handle("ช่วยดูเรื่องไฟให้หน่อย", on_speech=spoken.append))
+    assert spoken[0] == "เปิดไฟให้เรียบร้อยแล้วครับ"
+    assert spoken[1] == "แต่จริง ๆ ยังไม่ได้ส่งคำสั่งไปที่อุปกรณ์นะครับ"
+
+
+def test_tool_preface_is_spoken_and_simulation_is_said_at_the_end(tmp_path):
+    llm = StreamingLLM(
+        LLMResponse("Sure, dimming it a little.", [ToolCall("c1", "adjust_brightness", {"device_id": "main_light", "delta": 20})]),
+        LLMResponse("The light is now at 20%.", []),
+    )
+    assistant, _, _ = make(llm, tmp_path)
+    spoken = []
+    turn = asyncio.run(assistant.handle("I could use some light in here", "en-US", on_speech=spoken.append))
+    assert spoken == ["Sure, dimming it a little.", "The light is now at 20%.", "This was only a simulation."]
+    assert turn.reply.startswith("Sure, dimming it a little. The light is now at 20%.")
+
+
+def test_fast_path_speaks_acknowledgement_then_confirmation(tmp_path):
+    assistant, _, _ = make(None, tmp_path)
+    spoken = []
+    asyncio.run(assistant.handle("Turn on the light", "en-US", on_speech=spoken.append))
+    assert spoken == ["Got it, turning on the light.", "Simulated: The main light is now on."]  # tag not repeated
+
+
+def test_acknowledgement_comes_before_the_command_and_never_claims_success(tmp_path):
+    assistant, events, _ = make(None, tmp_path)
+    timeline = []
+    assistant._emit = lambda e: (events.append(e), timeline.append(type(e).__name__))
+    asyncio.run(assistant.handle("เปิดไฟห้องหลัก", "th-TH", on_speech=lambda s: timeline.append(f"say:{s}")))
+    assert timeline.index("say:ได้ครับ เดี๋ยวผมเปิดไฟให้ครับ") < timeline.index("CommandUpdate")
+    assert timeline.index("CommandUpdate") < timeline.index("say:จำลองการเปิดไฟห้องหลักเรียบร้อยแล้วครับ")
+    from nexus.assistant import _claims_completion
+
+    for language in ("th", "en"):
+        for tool, args in [("turn_light_on", {}), ("turn_light_off", {}), ("set_brightness", {"level": 30}),
+                           ("adjust_brightness", {"delta": -20}), ("adjust_brightness", {"delta": 20})]:
+            ack = replies.acknowledgement(tool, args, language)
+            assert ack and not _claims_completion(ack), ack
+
+
+def test_failed_command_after_acknowledgement_is_reported(tmp_path):
+    assistant, _, driver = make(None, tmp_path)
+    driver.failure = "error"
+    spoken = []
+    asyncio.run(assistant.handle("ปิดไฟ", "th-TH", on_speech=spoken.append))
+    assert spoken[0] == "ได้ครับ เดี๋ยวผมปิดไฟให้ครับ"
+    assert spoken[1].startswith("ปิดไฟห้องหลักไม่สำเร็จครับ")
+
+
+def test_llm_tool_call_is_acknowledged_once(tmp_path):
+    llm = StreamingLLM(
+        LLMResponse("", [ToolCall("c1", "adjust_brightness", {"device_id": "main_light", "delta": -20})]),
+        LLMResponse("หรี่ไฟลงแล้วครับ ตอนนี้ 80% เป็นการจำลองครับ", []),
+    )
+    assistant, _, driver = make(llm, tmp_path)
+    asyncio.run(driver.apply("main_light", {"on": True, "brightness": 100}))
+    spoken = []
+    asyncio.run(assistant.handle("ไฟสว่างเกินไป", "th-TH", on_speech=spoken.append))
+    assert spoken[0] == "ได้ครับ เดี๋ยวผมหรี่ไฟให้ครับ"
+    assert spoken[1:] == ["หรี่ไฟลงแล้วครับ", "ตอนนี้ 80% เป็นการจำลองครับ"]
+
+
+def test_stt_language_overrides_the_script_guess(tmp_path):
+    llm = ScriptedLLM(LLMResponse("โอเคครับ", []))
+    assistant, _, _ = make(llm, tmp_path)
+    asyncio.run(assistant.handle("OK", "th-TH"))  # Latin text, but Thai speech
+    assert 'user_language: "th-TH"' in llm.systems[0]

@@ -122,8 +122,6 @@ def main() -> None:
             stt = azure.transcribe(pcm)
             if stt.status != "ok":
                 print(f"  ✗ {stt.error} ({stt.latency_ms} ms)")
-                if args.command == "echo" and not args.no_playback:
-                    audio_io.play(sounds.load_prompt("not_heard", THAI), settings.output_device)
                 return
             text = correct(stt.text)
             note = "" if text == stt.text else f" (แก้จาก \"{stt.text}\")"
