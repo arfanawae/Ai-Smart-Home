@@ -1,6 +1,11 @@
-"""NLU check for the Gemini path: indirect / informal / sarcastic / emotional phrasing.
+"""NLU check for the LLM path: indirect / informal / sarcastic / emotional phrasing.
 
-    python eval_nlu.py            ~12 cases, about 15–20 Gemini requests (free-tier quota)
+    python eval_nlu.py                 ~12 cases on VOICE_PROVIDER (with its fallback), 15–20 requests
+    python eval_nlu.py groq --gap 10   one provider only (no fallback), 10 s between cases so the
+    python eval_nlu.py gemini --gap 6  free-tier per-minute limits are not what gets measured
+
+Last results (2026-10-20, English system prompt): Groq gpt-oss-120b 12/12 intent, 12/12 language,
+median 1.8 s; Gemini flash-lite 12/12, 12/12, 1.5 s.
 
 Each case sets the simulated light, asks once, and checks two things:
   - did NEXUS change the light in the expected direction (or correctly leave it alone)?
@@ -55,9 +60,16 @@ def effective(on: bool, brightness: int) -> int:
     return brightness if on else 0
 
 
-async def run() -> None:
+async def run(only: str | None = None, gap_s: float = 0.0) -> None:
     # NLU is what is measured here, not transport: always in-process devices (and direct state setup).
     settings = dataclasses.replace(load_settings(), device_backend="local")
+    if only:  # one provider, no fallback: drop the other key
+        settings = dataclasses.replace(
+            settings,
+            voice_provider=only,
+            gemini_api_key=settings.gemini_api_key if only == "gemini" else None,
+            groq_api_key=settings.groq_api_key if only == "groq" else None,
+        )
     correct = language_ok = tested = 0
     for case in CASES:
         assert not decide(case.text).execute, f"{case.text!r} goes to the fast path, not Gemini"
@@ -67,6 +79,8 @@ async def run() -> None:
         )
         before = effective(case.on, case.brightness)
         turn = await assistant.handle(case.text)
+        if gap_s:
+            await asyncio.sleep(gap_s)
         if turn.route == "system":  # quota / network error: this case was not actually tested
             print(f"? {case.text[:34]:<36} NOT TESTED — {turn.reply[:80]}")
             continue
@@ -88,4 +102,10 @@ async def run() -> None:
 if __name__ == "__main__":
     for stream in (sys.stdout, sys.stderr):
         stream.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
-    asyncio.run(run())
+    import argparse
+
+    parser = argparse.ArgumentParser(description="NLU check for the LLM path")
+    parser.add_argument("provider", nargs="?", choices=["gemini", "groq"], help="test one provider only")
+    parser.add_argument("--gap", type=float, default=0.0, help="seconds between cases (free-tier limits)")
+    args = parser.parse_args()
+    asyncio.run(run(args.provider, args.gap))
