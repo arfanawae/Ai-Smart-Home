@@ -1,3 +1,6 @@
+import { Mic } from 'lucide-react'
+import { useState } from 'react'
+import { toggleRecording } from '../../lib/browserVoice'
 import { VISUALS } from '../../lib/stateVisuals'
 import { effectiveState, useNexus } from '../../store/nexus'
 import { AICore } from './AICore'
@@ -10,17 +13,33 @@ export function CoreStage({ compact = false }: { compact?: boolean }) {
   const detail = useNexus((s) => s.ai.detail)
   const info = useNexus((s) => s.info)
   const lastUser = useNexus((s) => s.chat.findLast((c) => c.type === 'user'))
+  const connection = useNexus((s) => s.connection)
+  const demo = useNexus((s) => s.demo)
+  const browserVoice = useNexus((s) => s.browserVoice)
+  const [micError, setMicError] = useState<string | null>(null)
+  const canTalk = !demo && connection === 'open'
   const visual = VISUALS[state]
   const voiceOn = (info?.languages.length ?? 0) > 0
 
   const hint =
-    state === 'DISCONNECTED'
-      ? 'รอการเชื่อมต่อกับ NEXUS'
-      : state === 'IDLE'
-        ? voiceOn
-          ? 'พูด "Nexus" แล้วเว้นจังหวะสั้น ๆ ก่อนสั่งงาน'
-          : 'พิมพ์คำสั่งในช่องสนทนา (ระบบเสียงปิดอยู่)'
-        : detail
+    micError ??
+    (browserVoice === 'recording'
+      ? 'กำลังฟังผ่านไมค์ของเบราว์เซอร์ — หยุดพูดแล้วจะส่งเอง (แตะอีกครั้งเพื่อส่งทันที)'
+      : state === 'DISCONNECTED'
+        ? 'รอการเชื่อมต่อกับ NEXUS'
+        : state === 'IDLE'
+          ? voiceOn
+            ? 'พูด "Nexus" หรือแตะวงกลมเพื่อพูดผ่านเบราว์เซอร์'
+            : 'แตะวงกลมเพื่อพูด หรือพิมพ์คำสั่งในช่องสนทนา'
+          : detail)
+
+  const talk = () => {
+    setMicError(null)
+    toggleRecording().catch((e: unknown) => {
+      const denied = e instanceof DOMException && (e.name === 'NotAllowedError' || e.name === 'SecurityError')
+      setMicError(denied ? 'เบราว์เซอร์ไม่ได้รับอนุญาตให้ใช้ไมค์ — กดไอคอนกุญแจข้าง URL แล้วอนุญาต Microphone' : `เปิดไมค์ไม่ได้: ${String(e)}`)
+    })
+  }
 
   return (
     // w-full: the core size must come from the column, not from how long the hint text happens to be
@@ -36,7 +55,28 @@ export function CoreStage({ compact = false }: { compact?: boolean }) {
       </p>
       {/* xl: also bounded by screen height, so the dashboard fits a 1440×900 / 1366×768 laptop without scrolling */}
       <div className={`my-3 w-full ${compact ? 'max-w-[240px]' : 'max-w-[440px] xl:max-w-[clamp(220px,calc(100dvh-37rem),500px)]'}`}>
-        <AICore state={state} since={since} />
+        <button
+          type="button"
+          onClick={talk}
+          disabled={!canTalk}
+          aria-pressed={browserVoice === 'recording'}
+          aria-label={browserVoice === 'recording' ? 'ส่งเสียงที่พูดให้ NEXUS' : 'แตะเพื่อพูดกับ NEXUS'}
+          className="group relative block w-full rounded-full focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-cyan disabled:cursor-default enabled:cursor-pointer"
+        >
+          <AICore state={state} since={since} />
+          {canTalk && (
+            <span
+              className={`pointer-events-none absolute bottom-[6%] left-1/2 flex size-9 -translate-x-1/2 items-center justify-center rounded-full border backdrop-blur transition-all ${
+                browserVoice === 'recording'
+                  ? 'border-cyan bg-cyan/25 text-cyan shadow-[0_0_16px_var(--color-cyan)]'
+                  : 'border-line bg-bg-1/70 text-text-2 opacity-70 group-hover:opacity-100'
+              }`}
+              aria-hidden="true"
+            >
+              <Mic className="size-4" />
+            </span>
+          )}
+        </button>
       </div>
       <Waveform state={state} />
       <p className="mt-3 text-lg font-medium" style={{ color: `var(${visual.color})` }}>

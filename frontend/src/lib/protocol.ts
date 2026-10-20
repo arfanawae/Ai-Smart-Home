@@ -97,8 +97,17 @@ export interface DeviceMsg {
   ts: string
 }
 
-export type FeedMsg = HelloMsg | StateMsg | UserMsg | ReplyMsg | CommandMsg | LevelMsg | ErrorMsg | DeviceMsg
+/** A reply for the dashboard to read aloud (browser speech synthesis) after voice recorded here. */
+export interface SpeakMsg {
+  type: 'speak'
+  text: string
+  lang: string
+}
+
+export type FeedMsg = HelloMsg | StateMsg | UserMsg | ReplyMsg | CommandMsg | LevelMsg | ErrorMsg | DeviceMsg | SpeakMsg
 
 export type ClientMsg =
   | { type: 'text'; text: string }
   | { type: 'command'; tool: string; args: Record<string, unknown> }
+  /** 16 kHz mono WAV recorded in the dashboard, base64. */
+  | { type: 'audio'; data: string }

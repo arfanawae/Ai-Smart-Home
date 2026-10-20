@@ -27,6 +27,8 @@ export interface NexusData {
   activity: CommandMsg[]
   lastError: string | null
   nextId: number
+  /** Voice handled in this browser: recording the mic, or reading a reply aloud. */
+  browserVoice: 'idle' | 'recording' | 'speaking'
 }
 
 export const MAX_CHAT = 60
@@ -43,6 +45,7 @@ export const initialData: NexusData = {
   activity: [],
   lastError: null,
   nextId: 1,
+  browserVoice: 'idle',
 }
 
 /** Pure state transition for one feed message ("level" is handled outside the store — see levels.ts). */
@@ -84,6 +87,7 @@ export function reduce(s: NexusData, msg: FeedMsg, now = Date.now()): NexusData 
     case 'error':
       return { ...s, lastError: msg.message }
     case 'level':
+    case 'speak': // handled by the browser voice, not stored
       return s
   }
 }
@@ -92,6 +96,7 @@ interface NexusStore extends NexusData {
   apply: (msg: FeedMsg) => void
   setConnection: (connection: Connection, retryAt?: number | null) => void
   setDemo: (demo: boolean) => void
+  setBrowserVoice: (v: NexusData['browserVoice']) => void
 }
 
 export const useNexus = create<NexusStore>()((set) => ({
@@ -99,10 +104,14 @@ export const useNexus = create<NexusStore>()((set) => ({
   apply: (msg) => set((s) => reduce(s, msg)),
   setConnection: (connection, retryAt = null) => set({ connection, retryAt }),
   setDemo: (demo) => set({ demo }),
+  setBrowserVoice: (browserVoice) => set({ browserVoice }),
 }))
 
 /** What the AI Core shows: a lost feed always wins, so the UI never pretends to be connected. */
-export function effectiveState(s: Pick<NexusData, 'connection' | 'ai' | 'demo'>): AIState {
+export function effectiveState(s: Pick<NexusData, 'connection' | 'ai' | 'demo'> & Partial<Pick<NexusData, 'browserVoice'>>): AIState {
   if (!s.demo && s.connection !== 'open') return 'DISCONNECTED'
+  // While this browser records or reads aloud, the core shows that (the backend does not know).
+  if (s.browserVoice === 'recording') return 'LISTENING'
+  if (s.browserVoice === 'speaking' && s.ai.state === 'IDLE') return 'SPEAKING'
   return s.ai.state
 }

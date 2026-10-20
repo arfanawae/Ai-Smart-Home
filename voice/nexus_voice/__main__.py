@@ -24,9 +24,12 @@ from nexus.cli import BOLD, CYAN, DIM, RESET, YELLOW, build_assistant, print_eve
 from nexus.config import Settings as BackendSettings
 from nexus.config import load_settings as load_backend_settings
 from nexus.events import AIState, Event, StateChanged, UserMessage
+from nexus.replies import to_speech
 
 from . import audio_io
 from .broadcast import DEFAULT_HOST, DEFAULT_PORT, EventBroadcaster
+from .cloud_stt import CloudSTT, TranscriptionError
+from .corrections import correct
 from .config import VoiceSettings, load_settings
 from .loop import Player, VoiceLoop
 from .speech import ENGLISH, THAI, AzureSpeech
@@ -83,6 +86,9 @@ class Core:
         )
         self.assistant: Assistant
         self.assistant, self.devices = build_assistant(backend, emit=self.emit_from_assistant)
+        llm = self.assistant.llm
+        self.broadcaster.update_info(llm=f"{llm.provider} · {llm.model}" if llm else None)
+        self.cloud_stt = CloudSTT.from_settings(backend, quota=self.assistant.quota)  # voice from the web page
         self._watcher: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
@@ -161,6 +167,27 @@ class Core:
                 self.emit(StateChanged(self.voice_loop.state))
         elif message["type"] == "command":
             await self.assistant.run_manual(message["tool"], message["args"])
+        elif message["type"] == "audio":
+            await self._browser_voice(message["wav"])
+
+    async def _browser_voice(self, wav: bytes) -> None:
+        """Speech recorded in the dashboard: transcribe (Groq/Gemini), run the normal turn, and send the
+        reply back as text for the browser to speak (window.speechSynthesis, free)."""
+        self.emit(StateChanged(AIState.TRANSCRIBING, "ถอดเสียงจากหน้าเว็บ"))
+        try:
+            heard = await self.cloud_stt.transcribe(wav)
+        except TranscriptionError as e:
+            self.emit(StateChanged(AIState.ERROR, f"ถอดเสียงไม่ได้: {e}"[:200]))
+            return
+        if not heard.text:
+            self.emit(StateChanged(AIState.IDLE, "ไม่ได้ยินคำพูด ลองกดแล้วพูดใหม่"))
+            return
+        text = correct(heard.text)
+        self.emit(UserMessage(text, "voice", heard.language))
+        turn = await self.assistant.handle(text, heard.language)
+        self.broadcaster.publish_speak(to_speech(turn.reply), heard.language)
+        if self.voice_loop:
+            self.emit(StateChanged(self.voice_loop.state))
 
 
 async def start_core(languages: list[str]) -> Core:

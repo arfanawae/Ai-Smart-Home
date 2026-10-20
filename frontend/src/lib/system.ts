@@ -38,7 +38,7 @@ export function systemRows(connection: Connection, info: Info | null, light: Lig
       key: 'llm',
       name: 'AI (LLM)',
       tone: info?.llm ? 'ok' : 'off',
-      value: info?.llm ? `Gemini · ${info.llm}` : 'ยังไม่ได้ตั้งค่า',
+      value: info?.llm ?? 'ยังไม่ได้ตั้งค่า',
       hint: info?.llm ? 'ตั้งค่าไว้แล้ว (สถานะจริงดูได้จากผลการตอบ)' : undefined,
     },
     {

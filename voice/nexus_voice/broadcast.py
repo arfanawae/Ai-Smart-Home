@@ -15,6 +15,8 @@ Client → server (validated here, then handed to `on_message`):
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 from collections.abc import Awaitable, Callable
 from datetime import datetime
@@ -29,6 +31,9 @@ DEFAULT_PORT = 8765
 CLIENT_QUEUE_SIZE = 200  # a stalled client loses its oldest messages instead of blocking NEXUS
 MAX_TEXT_LENGTH = 500
 MAX_MESSAGE_BYTES = 4096
+# Voice recorded in the dashboard: 16 kHz mono 16-bit WAV, at most 20 s (640 KB, ~850 KB as base64).
+MAX_AUDIO_BYTES = 16000 * 2 * 20 + 44
+MAX_AUDIO_MESSAGE_BYTES = MAX_AUDIO_BYTES * 4 // 3 + 200
 
 ClientMessageHandler = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -39,14 +44,16 @@ class InvalidMessage(ValueError):
 
 def parse_client_message(raw: str | bytes) -> dict[str, Any]:
     """Accept only the two message shapes the UI is allowed to send."""
-    if isinstance(raw, bytes) or len(raw) > MAX_MESSAGE_BYTES:
-        raise InvalidMessage("message must be a short JSON text frame")
+    if isinstance(raw, bytes) or len(raw) > MAX_AUDIO_MESSAGE_BYTES:
+        raise InvalidMessage("message must be a JSON text frame")
     try:
         message = json.loads(raw)
     except ValueError as e:
         raise InvalidMessage("invalid JSON") from e
     if not isinstance(message, dict):
         raise InvalidMessage("message must be a JSON object")
+    if len(raw) > MAX_MESSAGE_BYTES and message.get("type") != "audio":
+        raise InvalidMessage("message must be a short JSON text frame")  # only audio may be large
     match message.get("type"):
         case "text":
             text = message.get("text")
@@ -58,7 +65,15 @@ def parse_client_message(raw: str | bytes) -> dict[str, Any]:
             if not isinstance(tool, str) or not isinstance(args, dict):
                 raise InvalidMessage("command needs a tool name and an args object")
             return {"type": "command", "tool": tool, "args": args}
-    raise InvalidMessage("type must be 'text' or 'command'")
+        case "audio":
+            try:
+                wav = base64.b64decode(str(message.get("data", "")), validate=True)
+            except (binascii.Error, ValueError) as e:
+                raise InvalidMessage("audio data must be base64") from e
+            if not (44 < len(wav) <= MAX_AUDIO_BYTES) or wav[:4] != b"RIFF" or wav[8:12] != b"WAVE":
+                raise InvalidMessage("audio must be a WAV file of at most 20 s")
+            return {"type": "audio", "wav": wav}
+    raise InvalidMessage("type must be 'text', 'command' or 'audio'")
 
 
 class EventBroadcaster:
@@ -90,7 +105,7 @@ class EventBroadcaster:
         return len(self._clients)
 
     async def start(self) -> None:
-        self._server = await serve(self._handle, self._host, self._port)
+        self._server = await serve(self._handle, self._host, self._port, max_size=MAX_AUDIO_MESSAGE_BYTES + 1024)
 
     async def stop(self, flush_timeout_s: float = 1.0) -> None:
         deadline = asyncio.get_running_loop().time() + flush_timeout_s
@@ -125,6 +140,11 @@ class EventBroadcaster:
         elif isinstance(event, CommandUpdate) and event.result.reported and event.result.device_id:
             self._devices[event.result.device_id] = event.result.reported.to_dict()
         self._broadcast(json.dumps(message, ensure_ascii=False))
+
+    def publish_speak(self, text: str, language: str) -> None:
+        """A reply for the dashboard to read aloud with the browser's own (free) speech synthesis."""
+        if text.strip():
+            self._broadcast(json.dumps({"type": "speak", "text": text, "lang": language}, ensure_ascii=False))
 
     def publish_level(self, rms: float, source: str, bands: list[float] | None = None) -> None:
         """Loudness 0–1 of the mic ("mic") or of NEXUS's own voice ("tts"), optionally with per-band

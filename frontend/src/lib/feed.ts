@@ -1,4 +1,5 @@
 import { useNexus } from '../store/nexus'
+import { speakReply } from './browserVoice'
 import { pushLevel } from './levels'
 import type { ClientMsg, FeedMsg } from './protocol'
 
@@ -18,6 +19,7 @@ function handle(raw: string): void {
     return
   }
   if (msg.type === 'level') pushLevel(msg.rms, msg.source, msg.bands)
+  else if (msg.type === 'speak') speakReply(msg.text, msg.lang)
   else useNexus.getState().apply(msg)
 }
 
