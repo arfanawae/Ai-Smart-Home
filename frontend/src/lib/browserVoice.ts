@@ -1,8 +1,12 @@
-// Voice in the dashboard itself (no laptop microphone needed): tap the core, speak, and the reply is
-// read aloud by the browser's own speech synthesis — free, nothing to install.
+// Voice in the dashboard itself (no laptop microphone needed): tap the core once and talk — NEXUS
+// keeps listening after each reply (continuous listening) until you turn it off, say goodbye, or stay
+// quiet for a minute. Replies are read aloud by the browser's own speech synthesis — free.
 //
-//   mic → Web Audio (16 kHz mono) → WAV → NEXUS → Groq Whisper / Gemini → assistant turn → "speak" → speechSynthesis
+//   mic → Web Audio (16 kHz mono) → WAV → NEXUS → Azure / Groq / Gemini STT → assistant turn
+//       → "speak" → speechSynthesis → listen again
 //
+// The microphone stays open for the whole session (re-opening it outside a tap is blocked on iOS),
+// but nothing is captured while NEXUS speaks plus a short echo tail, so it never hears itself.
 // While recording, the real mic level and spectrum drive the core and the equaliser. The browser's
 // speech synthesis exposes no audio samples, so while it speaks the visualiser follows its word
 // boundaries instead (an approximation, not a measurement).
@@ -14,41 +18,127 @@ import { useNexus } from '../store/nexus'
 const RATE = 16000
 const SPEECH_RMS = 0.015 // above this a block counts as voice
 const END_SILENCE_MS = 1200 // quiet this long after speaking → send
-const NO_SPEECH_MS = 7000 // nothing said at all → give up quietly
-const MAX_MS = 15000
+const MAX_MS = 15000 // one utterance at most
+const SESSION_IDLE_MS = 60000 // continuous listening ends after a minute without speech
+const PRE_ROLL_BLOCKS = 4 // ~0.5 s kept from before the voice starts, so the first syllable is not cut
+const ECHO_TAIL_MS = 400 // the room still rings for a moment after the browser stops speaking
 const BANDS = 24
 const REPLY_TIMEOUT_MS = 45000
 
-interface Recording {
+/** The open microphone, kept for the whole continuous-listening session. */
+interface Session {
   ctx: AudioContext
   stream: MediaStream
   node: ScriptProcessorNode
   analyser: AnalyserNode
+  idleSince: number
+}
+
+/** The utterance being captured right now (null while waiting for / speaking a reply). */
+interface Capture {
   chunks: Float32Array[]
   startedAt: number
   lastVoiceAt: number
   heard: boolean
 }
 
-let rec: Recording | null = null
-let awaitingReplyUntil = 0
+let session: Session | null = null
+let capture: Capture | null = null
+let replyTimer = 0
+let resumeTimer = 0
 let speakingTimer = 0
+let speechUnlocked = false
 
-const setVoice = (v: 'idle' | 'recording' | 'speaking') => useNexus.getState().setBrowserVoice(v)
+const store = () => useNexus.getState()
+const setVoice = (v: 'idle' | 'recording' | 'speaking') => store().setBrowserVoice(v)
 
-export function isRecording(): boolean {
-  return rec !== null
+export function isListening(): boolean {
+  return session !== null
 }
 
-/** Tap on the core: start listening, or (if already listening) send what was said so far. */
-export async function toggleRecording(): Promise<void> {
-  if (rec) return stopRecording(true)
-  window.speechSynthesis?.cancel() // talking over NEXUS = interrupt it
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-  })
-  const ctx = new AudioContext({ sampleRate: RATE }) // the browser resamples the mic to 16 kHz
-  const source = ctx.createMediaStreamSource(stream)
+/**
+ * Mobile browsers (iOS Safari above all) only allow audio and speech that a tap starts. The reply is
+ * spoken later, from a network message — so the first tap also speaks a silent utterance, which
+ * unlocks speechSynthesis for the rest of the page's life.
+ */
+function unlockSpeech(): void {
+  const synth = window.speechSynthesis
+  if (speechUnlocked || !synth) return
+  const silent = new SpeechSynthesisUtterance(' ')
+  silent.volume = 0
+  synth.speak(silent)
+  speechUnlocked = true
+}
+
+/** A Thai message for why the microphone could not be opened. */
+export function micErrorMessage(e: unknown): string {
+  const name = e instanceof Error ? e.name : ''
+  switch (name) {
+    case 'InsecureContext':
+      return 'ไมค์ใช้ได้เฉพาะหน้าเว็บที่เป็น HTTPS (หรือ localhost) — เปิดผ่านลิงก์ https:// ของ Cloudflare Tunnel'
+    case 'NotAllowedError':
+    case 'PermissionDeniedError':
+      return 'ไม่ได้รับอนุญาตให้ใช้ไมค์ — อนุญาต Microphone ในการตั้งค่าเว็บไซต์ของเบราว์เซอร์ (iPhone: Settings › Safari › Microphone) แล้วลองใหม่'
+    case 'NotFoundError':
+    case 'DevicesNotFoundError':
+      return 'ไม่พบไมโครโฟนในอุปกรณ์นี้'
+    case 'NotReadableError':
+    case 'TrackStartError':
+      return 'ไมค์กำลังถูกแอปอื่นใช้อยู่ (เช่น โทรศัพท์หรือแอปอัดเสียง) — ปิดแอปนั้นแล้วลองใหม่'
+    case 'SecurityError':
+      return 'เบราว์เซอร์บล็อกไมค์ในหน้านี้ — ตรวจว่าเปิดผ่าน HTTPS และไม่ได้อยู่ในหน้าต่างฝังของแอปอื่น'
+    default:
+      return `เปิดไมค์ไม่ได้: ${e instanceof Error ? e.message : String(e)}`
+  }
+}
+
+function newContext(): AudioContext {
+  try {
+    return new AudioContext({ sampleRate: RATE }) // resampled by the browser where supported
+  } catch {
+    return new AudioContext() // e.g. older Safari: native rate, resampled before sending
+  }
+}
+
+/**
+ * Tap on the core.
+ *  - not listening        → open the mic and start continuous listening
+ *  - capturing speech     → send it now (no need to wait for the pause)
+ *  - NEXUS is speaking    → interrupt it and listen
+ */
+export async function tapToTalk(): Promise<void> {
+  if (session) {
+    if (capture?.heard) return finishCapture()
+    window.speechSynthesis?.cancel()
+    return startCapture()
+  }
+  // Everything up to the first await runs inside the tap — that is what unlocks audio on phones.
+  window.speechSynthesis?.cancel()
+  unlockSpeech()
+  if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+    throw Object.assign(new Error('insecure context'), { name: 'InsecureContext' })
+  }
+  let ctx = newContext()
+  void ctx.resume()
+  let stream: MediaStream
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    })
+  } catch (e) {
+    void ctx.close()
+    throw e
+  }
+  let source: MediaStreamAudioSourceNode
+  try {
+    source = ctx.createMediaStreamSource(stream)
+  } catch {
+    // Firefox refuses a mic at a different rate than the context: use the native rate instead.
+    void ctx.close()
+    ctx = new AudioContext()
+    void ctx.resume()
+    source = ctx.createMediaStreamSource(stream)
+  }
   const analyser = ctx.createAnalyser()
   analyser.fftSize = 1024
   analyser.smoothingTimeConstant = 0.5
@@ -56,51 +146,101 @@ export async function toggleRecording(): Promise<void> {
   source.connect(analyser)
   source.connect(node)
   node.connect(ctx.destination) // required for onaudioprocess to fire; the output stays silent
-  const now = performance.now()
-  rec = { ctx, stream, node, analyser, chunks: [], startedAt: now, lastVoiceAt: now, heard: false }
-  const spectrum = new Float32Array(analyser.frequencyBinCount)
+  session = { ctx, stream, node, analyser, idleSince: performance.now() }
+  node.onaudioprocess = onAudio(new Float32Array(analyser.frequencyBinCount))
+  store().setContinuous(true)
+  startCapture()
+}
 
-  node.onaudioprocess = (e) => {
-    const r = rec
-    if (!r) return
-    const block = new Float32Array(e.inputBuffer.getChannelData(0))
-    r.chunks.push(block)
-    const rms = Math.sqrt(block.reduce((sum, x) => sum + x * x, 0) / block.length)
-    r.analyser.getFloatFrequencyData(spectrum)
-    pushLevel(loudness(rms), 'mic', bands(spectrum, r.ctx.sampleRate))
-    const t = performance.now()
-    if (rms > SPEECH_RMS) {
-      r.heard = true
-      r.lastVoiceAt = t
-    }
-    if (r.heard && t - r.lastVoiceAt > END_SILENCE_MS) stopRecording(true)
-    else if (!r.heard && t - r.startedAt > NO_SPEECH_MS) stopRecording(false)
-    else if (t - r.startedAt > MAX_MS) stopRecording(true)
+/** Turn continuous listening off: close the mic, stop speaking, forget any pending turn. */
+export function stopListening(): void {
+  clearTimeout(replyTimer)
+  clearTimeout(resumeTimer)
+  capture = null
+  const s = session
+  session = null
+  if (s) {
+    s.node.onaudioprocess = null
+    s.node.disconnect()
+    s.stream.getTracks().forEach((t) => t.stop())
+    void s.ctx.close()
   }
+  window.speechSynthesis?.cancel()
+  clearInterval(speakingTimer)
+  pushLevel(0, 'mic', new Array<number>(BANDS).fill(0))
+  store().setContinuous(false)
+  setVoice('idle')
+}
+
+function startCapture(): void {
+  if (!session) return
+  clearTimeout(resumeTimer)
+  clearTimeout(replyTimer)
+  const now = performance.now()
+  capture = { chunks: [], startedAt: now, lastVoiceAt: now, heard: false }
   setVoice('recording')
 }
 
-export function stopRecording(sendIt: boolean): void {
-  const r = rec
-  if (!r) return
-  rec = null
-  r.node.onaudioprocess = null
-  r.node.disconnect()
-  r.stream.getTracks().forEach((t) => t.stop())
-  const rate = r.ctx.sampleRate
-  void r.ctx.close()
-  pushLevel(0, 'mic', new Array<number>(BANDS).fill(0))
-  setVoice('idle')
-  if (!sendIt || !r.heard) return
-  const pcm = resample(concat(r.chunks), rate, RATE)
-  if (send({ type: 'audio', data: toBase64(encodeWav(pcm, RATE)) })) awaitingReplyUntil = Date.now() + REPLY_TIMEOUT_MS
+function onAudio(spectrum: Float32Array<ArrayBuffer>) {
+  return (e: AudioProcessingEvent) => {
+    const s = session
+    const c = capture
+    if (!s || !c) return // not capturing: waiting for the reply or NEXUS is speaking
+    const block = new Float32Array(e.inputBuffer.getChannelData(0))
+    const rms = Math.sqrt(block.reduce((sum, x) => sum + x * x, 0) / block.length)
+    s.analyser.getFloatFrequencyData(spectrum)
+    pushLevel(loudness(rms), 'mic', bands(spectrum, s.ctx.sampleRate))
+    const t = performance.now()
+    c.chunks.push(block)
+    if (rms > SPEECH_RMS) {
+      c.heard = true
+      c.lastVoiceAt = t
+    } else if (!c.heard) {
+      if (c.chunks.length > PRE_ROLL_BLOCKS) c.chunks.shift() // keep only a short pre-roll while silent
+      if (t - s.idleSince > SESSION_IDLE_MS) stopListening() // a minute of silence ends the session
+      return
+    }
+    if (t - c.lastVoiceAt > END_SILENCE_MS || t - c.startedAt > MAX_MS) finishCapture()
+  }
 }
 
-/** The backend's "speak" message: read it aloud only if this browser asked the question. */
-export function speakReply(text: string, lang: string): void {
-  if (Date.now() > awaitingReplyUntil || !window.speechSynthesis) return
-  awaitingReplyUntil = 0
+/** Send the captured utterance; listening resumes when the reply has been spoken. */
+function finishCapture(): void {
+  const s = session
+  const c = capture
+  if (!s || !c) return
+  capture = null
+  pushLevel(0, 'mic', new Array<number>(BANDS).fill(0))
+  setVoice('idle')
+  s.idleSince = performance.now()
+  if (!c.heard) return startCapture()
+  const pcm = resample(concat(c.chunks), s.ctx.sampleRate, RATE)
+  if (!send({ type: 'audio', data: toBase64(encodeWav(pcm, RATE)) })) return startCapture()
+  // If NEXUS never answers (it was restarted, the network dropped), listen again anyway.
+  replyTimer = window.setTimeout(() => resumeListening(), REPLY_TIMEOUT_MS)
+}
+
+function resumeListening(delayMs = 0): void {
+  clearTimeout(resumeTimer)
+  if (!session) return
+  resumeTimer = window.setTimeout(() => {
+    if (session && !capture) {
+      session.idleSince = performance.now()
+      startCapture()
+    }
+  }, delayMs)
+}
+
+/**
+ * The backend's "speak" message ends a dashboard voice turn: read the reply aloud (if any), then
+ * listen again — or stop, if the user said goodbye. Ignored unless this page is listening.
+ */
+export function speakReply(text: string, lang: string, end = false): void {
+  if (!session) return
+  clearTimeout(replyTimer)
   const synth = window.speechSynthesis
+  const after = () => (end ? stopListening() : resumeListening(ECHO_TAIL_MS))
+  if (!text || !synth) return after()
   synth.cancel()
   const utterance = new SpeechSynthesisUtterance(text)
   utterance.lang = lang
@@ -119,17 +259,21 @@ export function speakReply(text: string, lang: string): void {
       pushLevel(envelope, 'tts', speechLikeBands(envelope, t))
     }, 60)
   }
-  const end = () => {
+  let finished = false
+  const done = () => {
+    if (finished) return
+    finished = true
     clearInterval(speakingTimer)
     pushLevel(0, 'tts', new Array<number>(BANDS).fill(0))
     setVoice('idle')
+    after()
   }
   utterance.onstart = start
   utterance.onboundary = () => {
     envelope = 0.75 + Math.random() * 0.25
   }
-  utterance.onend = end
-  utterance.onerror = end
+  utterance.onend = done
+  utterance.onerror = done
   synth.speak(utterance)
 }
 

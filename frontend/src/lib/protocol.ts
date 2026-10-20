@@ -100,8 +100,11 @@ export interface DeviceMsg {
 /** A reply for the dashboard to read aloud (browser speech synthesis) after voice recorded here. */
 export interface SpeakMsg {
   type: 'speak'
+  /** May be empty: the turn is over but there is nothing to say (e.g. nothing was heard). */
   text: string
   lang: string
+  /** The user said goodbye: continuous listening ends. */
+  end?: boolean
 }
 
 export type FeedMsg = HelloMsg | StateMsg | UserMsg | ReplyMsg | CommandMsg | LevelMsg | ErrorMsg | DeviceMsg | SpeakMsg

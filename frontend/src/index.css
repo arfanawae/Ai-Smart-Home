@@ -91,6 +91,22 @@ body {
   height: 44px; /* touch target; the visible track is drawn by the background */
   background: transparent;
   cursor: pointer;
+  /* Phones: a sideways swipe drags the slider, an up/down swipe still scrolls the page. Without this
+     the browser may take the drag for a scroll and cancel it halfway. */
+  touch-action: pan-y;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+@media (pointer: coarse) {
+  .range::-webkit-slider-thumb {
+    margin-top: -14px;
+    width: 34px;
+    height: 34px;
+  }
+  .range::-moz-range-thumb {
+    width: 26px;
+    height: 26px;
+  }
 }
 .range::-webkit-slider-runnable-track {
   height: 6px;

@@ -207,3 +207,25 @@ def test_levels_are_clamped_and_not_kept_for_late_joiners():
         await hub.stop()
 
     run(go())
+
+
+def test_web_token_is_required_when_configured(monkeypatch):
+    from websockets.exceptions import ConnectionClosed
+
+    monkeypatch.setenv("NEXUS_WEB_TOKEN", "phone-secret-123")
+
+    async def go():
+        hub = EventBroadcaster(port=0, simulated=True)
+        await hub.start()
+        async with connect(f"ws://127.0.0.1:{hub.port}/?token=phone-secret-123") as ws:
+            assert (await recv(ws))["type"] == "hello"
+        for path in ("/", "/?token=wrong"):
+            async with connect(f"ws://127.0.0.1:{hub.port}{path}") as ws:
+                try:
+                    await recv(ws)
+                    raise AssertionError("an unauthorised client got the feed")
+                except ConnectionClosed as e:
+                    assert e.rcvd.code == 4401
+        await hub.stop()
+
+    run(go())

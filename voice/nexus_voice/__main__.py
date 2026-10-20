@@ -26,12 +26,12 @@ from nexus.config import load_settings as load_backend_settings
 from nexus.events import AIState, Event, StateChanged, UserMessage
 from nexus.replies import to_speech
 
-from . import audio_io
+from . import audio_io, sounds
 from .broadcast import DEFAULT_HOST, DEFAULT_PORT, EventBroadcaster
 from .cloud_stt import CloudSTT, TranscriptionError
 from .corrections import correct
 from .config import VoiceSettings, load_settings
-from .loop import Player, VoiceLoop
+from .loop import Player, VoiceLoop, is_departure
 from .speech import ENGLISH, THAI, AzureSpeech
 from .vad import FRAME_SAMPLES, UtteranceSegmenter, VadConfig, frames
 from .wakeword import VoskWakeWord
@@ -174,20 +174,29 @@ class Core:
         """Speech recorded in the dashboard: transcribe (Groq/Gemini), run the normal turn, and send the
         reply back as text for the browser to speak (window.speechSynthesis, free)."""
         self.emit(StateChanged(AIState.TRANSCRIBING, "ถอดเสียงจากหน้าเว็บ"))
+        reply, language, end = "", THAI, False
         try:
-            heard = await self.cloud_stt.transcribe(wav)
-        except TranscriptionError as e:
-            self.emit(StateChanged(AIState.ERROR, f"ถอดเสียงไม่ได้: {e}"[:200]))
-            return
-        if not heard.text:
-            self.emit(StateChanged(AIState.IDLE, "ไม่ได้ยินคำพูด ลองกดแล้วพูดใหม่"))
-            return
-        text = correct(heard.text)
-        self.emit(UserMessage(text, "voice", heard.language))
-        turn = await self.assistant.handle(text, heard.language)
-        self.broadcaster.publish_speak(to_speech(turn.reply), heard.language)
-        if self.voice_loop:
-            self.emit(StateChanged(self.voice_loop.state))
+            try:
+                heard = await self.cloud_stt.transcribe(wav)
+            except TranscriptionError as e:
+                self.emit(StateChanged(AIState.ERROR, f"ถอดเสียงไม่ได้: {e}"[:200]))
+                return
+            if not heard.text:
+                self.emit(StateChanged(AIState.IDLE, "ไม่ได้ยินคำพูด พูดใหม่ได้เลย"))
+                return
+            text, language = correct(heard.text), heard.language
+            self.emit(UserMessage(text, "voice", language))
+            if is_departure(text):  # "ขอบคุณครับ", "bye" … ends continuous listening, like the voice loop
+                reply, end = sounds.PROMPTS[language if language in sounds.PROMPTS else THAI]["goodbye"], True
+                self.emit(StateChanged(AIState.IDLE))
+                return
+            turn = await self.assistant.handle(text, language)
+            reply = to_speech(turn.reply)
+            if self.voice_loop:
+                self.emit(StateChanged(self.voice_loop.state))
+        finally:
+            # Always close the turn — even with nothing to say — so the page can listen again.
+            self.broadcaster.publish_speak(reply, language, end)
 
 
 async def start_core(languages: list[str]) -> Core:

@@ -120,3 +120,16 @@ cd /d "D:\Ai Smart Home"
 .venv\Scripts\python -m pytest -q unoq\tests backend\tests\test_unoq_driver.py
 ```
 (สตาร์ต relay ตัวจริงบนพอร์ตสุ่ม + `main.py` ตัวจริงกับ MCU จำลอง — ต้อง `npm install` ใน `relay\` ก่อน)
+
+## MQTT (ทดลอง) — สั่งไฟจากหน้าเว็บผ่าน broker
+
+```
+หน้าเว็บ ── {"state": true, "value": 60} ──▶ <topic>/led   ──▶ บอร์ด (mqtt_link.py)
+หน้าเว็บ ◀── {"online", "state", "value"} ── <topic>/state ◀── บอร์ด (retained + last will เมื่อหลุด)
+```
+
+- เปิดใช้เมื่อมี `python/mqtt.json` บนบอร์ด และ `VITE_MQTT_TOPIC` ใน `frontend/.env.local` — **topic ต้องตรงกัน** (สุ่มยาว ห้าม commit ทั้งสองไฟล์)
+- broker `broker.emqx.io` เป็น**สาธารณะ ไม่มีรหัสผ่าน** — topic สุ่มคือการป้องกันเดียว ใช้ทดลองกับ LED บนบอร์ดเท่านั้น ห้ามใช้กับไฟบ้าน
+- บอร์ดรับเฉพาะ JSON ที่ถูกต้อง (value 1–100 เมื่อเปิด), ไม่เล่นคำสั่งเก่าที่ค้างใน broker (retained), จำกัด 15 คำสั่ง/วินาที
+- คำสั่งเสียงยังผ่าน NEXUS → relay ตามเดิม และบอร์ดส่งสถานะใหม่ออก MQTT ด้วย หน้าเว็บจึงเห็นตรงกันเสมอ
+- ใช้แค่ standard library ของ Python (MQTT client เล็ก ๆ ใน `mqtt_link.py`) — ไม่ต้อง pip install บนบอร์ด

@@ -1,6 +1,7 @@
 import { Lightbulb, LightbulbOff, Loader2 } from 'lucide-react'
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { send } from '../../lib/feed'
+import { mqttEnabled, publishLight } from '../../lib/mqttLight'
 import { statusLabel, timeOf } from '../../lib/format'
 import { useNexus } from '../../store/nexus'
 import { HudPanel, MockBadge } from '../ui/HudPanel'
@@ -26,6 +27,8 @@ export function LightCard({ delay = 0 }: { delay?: number }) {
   const light = useNexus((s) => s.devices.main_light)
   const connection = useNexus((s) => s.connection)
   const demo = useNexus((s) => s.demo)
+  const mqtt = useNexus((s) => s.mqtt)
+  const viaMqtt = mqttEnabled && mqtt === 'open' // light commands go through the broker
   const lastManual = useNexus((s) => s.activity.find((c) => c.route === 'manual' && c.device_id === 'main_light'))
   const lastAny = useNexus((s) => s.activity.find((c) => c.device_id === 'main_light'))
   const [pending, setPending] = useState<Pending>(null)
@@ -33,15 +36,15 @@ export function LightCard({ delay = 0 }: { delay?: number }) {
   const [notice, setNotice] = useState<string | null>(null)
   const seen = useRef(lastManual)
 
-  const usable = !demo && connection === 'open' && !!light?.online
+  const usable = !demo && (connection === 'open' || viaMqtt) && !!light?.online
   const on = light?.on ?? false
 
   // ── command queue: real-time while dragging, latest wins, one in flight ─────────────────────
   const queue = useRef<Queue>({ next: null, inFlight: false, lastSentAt: 0, timer: 0, dragging: false })
-  const device = useRef({ usable, on, brightness: light?.brightness ?? 0 })
+  const device = useRef({ usable, on, brightness: light?.brightness ?? 0, viaMqtt })
   const flush = useRef(() => {})
   useEffect(() => {
-    device.current = { usable, on, brightness: light?.brightness ?? 0 }
+    device.current = { usable, on, brightness: light?.brightness ?? 0, viaMqtt }
   })
 
   const sendNext = () => {
@@ -61,7 +64,10 @@ export function LightCard({ delay = 0 }: { delay?: number }) {
       return
     }
     q.next = null
-    if (!send({ type: 'command', tool: cmd.tool, args: { device_id: 'main_light', ...cmd.args } })) {
+    const sent = d.viaMqtt
+      ? publishLight(cmd.tool !== 'turn_light_off', cmd.level ?? (d.brightness > 0 ? d.brightness : 100))
+      : send({ type: 'command', tool: cmd.tool, args: { device_id: 'main_light', ...cmd.args } })
+    if (!sent) {
       setDraft(null) // not sent: show the device's real state again
       return
     }
@@ -87,6 +93,7 @@ export function LightCard({ delay = 0 }: { delay?: number }) {
   }
 
   const startDrag = () => {
+    if (queue.current.dragging) return // pointerdown and touchstart can both fire for one touch
     queue.current.dragging = true
     // Released outside the slider still counts, so listen on the window; either event ends the drag.
     const drag = new AbortController()
@@ -99,6 +106,9 @@ export function LightCard({ delay = 0 }: { delay?: number }) {
     }
     window.addEventListener('pointerup', end, { signal: drag.signal })
     window.addEventListener('pointercancel', end, { signal: drag.signal })
+    // Older iOS Safari reports touches without pointer events.
+    window.addEventListener('touchend', end, { signal: drag.signal })
+    window.addEventListener('touchcancel', end, { signal: drag.signal })
   }
 
   // Turning on restores the last level the device kept (the backend uses 100% if that was 0).
@@ -129,6 +139,16 @@ export function LightCard({ delay = 0 }: { delay?: number }) {
     clearTimeout(q.timer)
     if (!q.dragging && !q.inFlight) setDraft(null)
   }, [lastAny])
+
+  // MQTT: the board's state message is the confirmation (there is no NEXUS command result).
+  useEffect(() => {
+    const q = queue.current
+    if (!viaMqtt || !q.inFlight || !light) return
+    q.inFlight = false
+    setPending(null)
+    flush.current()
+    if (!q.dragging && !q.inFlight && !q.next) setDraft(null)
+  }, [light, viaMqtt])
 
   // Board went offline mid-command: nothing will confirm it, so stop waiting (the display below
   // already ignores the draft and the spinner while the card is not usable).
@@ -212,6 +232,7 @@ export function LightCard({ delay = 0 }: { delay?: number }) {
             style={{ '--fill': `${shownLevel}%` } as CSSProperties}
             onChange={(e) => setLevel(Number(e.target.value))}
             onPointerDown={startDrag}
+            onTouchStart={startDrag}
           />
           <div className="grid grid-cols-4 gap-2">
             {PRESETS.map((p) => (

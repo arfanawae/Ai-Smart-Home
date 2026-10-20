@@ -1,9 +1,10 @@
-import { Mic } from 'lucide-react'
+import { MicOff } from 'lucide-react'
 import { useState } from 'react'
-import { toggleRecording } from '../../lib/browserVoice'
+import { micErrorMessage, stopListening, tapToTalk } from '../../lib/browserVoice'
 import { VISUALS } from '../../lib/stateVisuals'
 import { effectiveState, useNexus } from '../../store/nexus'
 import { AICore } from './AICore'
+import { MicButton, type MicMode } from './MicButton'
 import { Waveform } from './Waveform'
 
 /** Centre of the dashboard: name, status line, the core, the waveform and the latest words. */
@@ -16,29 +17,30 @@ export function CoreStage({ compact = false }: { compact?: boolean }) {
   const connection = useNexus((s) => s.connection)
   const demo = useNexus((s) => s.demo)
   const browserVoice = useNexus((s) => s.browserVoice)
+  const continuous = useNexus((s) => s.continuous)
   const [micError, setMicError] = useState<string | null>(null)
   const canTalk = !demo && connection === 'open'
+  const micMode: MicMode = !canTalk ? 'off' : browserVoice === 'recording' ? 'recording' : continuous ? 'busy' : 'idle'
   const visual = VISUALS[state]
   const voiceOn = (info?.languages.length ?? 0) > 0
 
   const hint =
     micError ??
     (browserVoice === 'recording'
-      ? 'กำลังฟังผ่านไมค์ของเบราว์เซอร์ — หยุดพูดแล้วจะส่งเอง (แตะอีกครั้งเพื่อส่งทันที)'
-      : state === 'DISCONNECTED'
-        ? 'รอการเชื่อมต่อกับ NEXUS'
-        : state === 'IDLE'
-          ? voiceOn
-            ? 'พูด "Nexus" หรือแตะวงกลมเพื่อพูดผ่านเบราว์เซอร์'
-            : 'แตะวงกลมเพื่อพูด หรือพิมพ์คำสั่งในช่องสนทนา'
-          : detail)
+      ? 'พูดได้เลย — หยุดพูดแล้วจะส่งเอง และจะฟังต่อหลังตอบเสร็จ'
+      : continuous && browserVoice === 'speaking'
+        ? 'แตะปุ่มไมค์เพื่อขัดจังหวะแล้วพูดต่อ'
+        : state === 'DISCONNECTED'
+          ? 'รอการเชื่อมต่อกับ NEXUS'
+          : state === 'IDLE'
+            ? voiceOn
+              ? 'พูด "Nexus" หรือแตะปุ่มไมค์เพื่อพูดผ่านเบราว์เซอร์'
+              : 'แตะปุ่มไมค์เพื่อพูด หรือพิมพ์คำสั่งในช่องสนทนา'
+            : detail)
 
   const talk = () => {
     setMicError(null)
-    toggleRecording().catch((e: unknown) => {
-      const denied = e instanceof DOMException && (e.name === 'NotAllowedError' || e.name === 'SecurityError')
-      setMicError(denied ? 'เบราว์เซอร์ไม่ได้รับอนุญาตให้ใช้ไมค์ — กดไอคอนกุญแจข้าง URL แล้วอนุญาต Microphone' : `เปิดไมค์ไม่ได้: ${String(e)}`)
-    })
+    tapToTalk().catch((e: unknown) => setMicError(micErrorMessage(e)))
   }
 
   return (
@@ -54,31 +56,28 @@ export function CoreStage({ compact = false }: { compact?: boolean }) {
         </span>
       </p>
       {/* xl: also bounded by screen height, so the dashboard fits a 1440×900 / 1366×768 laptop without scrolling */}
-      <div className={`my-3 w-full ${compact ? 'max-w-[240px]' : 'max-w-[440px] xl:max-w-[clamp(220px,calc(100dvh-37rem),500px)]'}`}>
-        <button
-          type="button"
-          onClick={talk}
-          disabled={!canTalk}
-          aria-pressed={browserVoice === 'recording'}
-          aria-label={browserVoice === 'recording' ? 'ส่งเสียงที่พูดให้ NEXUS' : 'แตะเพื่อพูดกับ NEXUS'}
-          className="group relative block w-full rounded-full focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-cyan disabled:cursor-default enabled:cursor-pointer"
-        >
-          <AICore state={state} since={since} />
-          {canTalk && (
-            <span
-              className={`pointer-events-none absolute bottom-[6%] left-1/2 flex size-9 -translate-x-1/2 items-center justify-center rounded-full border backdrop-blur transition-all ${
-                browserVoice === 'recording'
-                  ? 'border-cyan bg-cyan/25 text-cyan shadow-[0_0_16px_var(--color-cyan)]'
-                  : 'border-line bg-bg-1/70 text-text-2 opacity-70 group-hover:opacity-100'
-              }`}
-              aria-hidden="true"
-            >
-              <Mic className="size-4" />
-            </span>
-          )}
-        </button>
+      <div className={`my-3 w-full ${compact ? 'max-w-[240px]' : 'max-w-[440px] xl:max-w-[clamp(160px,calc(100dvh-43rem),500px)]'}`}>
+        <AICore state={state} since={since} />
       </div>
       <Waveform state={state} />
+      <MicButton mode={micMode} onTap={talk} />
+      {continuous && (
+        // Continuous listening is on: say so plainly, and offer the way out.
+        <div className="mt-2 flex items-center gap-2 rounded-full border border-cyan/40 bg-cyan/10 py-1 pr-1 pl-3 text-xs text-cyan" role="status">
+          <span className="relative flex size-2">
+            <span className="absolute inline-flex size-full animate-ping rounded-full bg-cyan opacity-60 motion-reduce:animate-none" />
+            <span className="relative inline-flex size-2 rounded-full bg-cyan" />
+          </span>
+          ฟังต่อเนื่อง — พูดคำสั่งถัดไปได้เลย
+          <button
+            type="button"
+            onClick={stopListening}
+            className="ml-1 flex min-h-8 items-center gap-1 rounded-full border border-cyan/50 px-3 text-text-1 hover:bg-cyan/20 focus-visible:outline-2 focus-visible:outline-cyan"
+          >
+            <MicOff className="size-3.5" aria-hidden="true" /> หยุดฟัง
+          </button>
+        </div>
+      )}
       <p className="mt-3 text-lg font-medium" style={{ color: `var(${visual.color})` }}>
         {visual.label}
       </p>

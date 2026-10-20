@@ -29,6 +29,10 @@ export interface NexusData {
   nextId: number
   /** Voice handled in this browser: recording the mic, or reading a reply aloud. */
   browserVoice: 'idle' | 'recording' | 'speaking'
+  /** Continuous listening in this browser: the mic stays on between turns until turned off. */
+  continuous: boolean
+  /** MQTT broker link for light control (only when VITE_MQTT_TOPIC is set). */
+  mqtt: 'off' | 'connecting' | 'open' | 'closed'
 }
 
 export const MAX_CHAT = 60
@@ -46,6 +50,8 @@ export const initialData: NexusData = {
   lastError: null,
   nextId: 1,
   browserVoice: 'idle',
+  continuous: false,
+  mqtt: 'off',
 }
 
 /** Pure state transition for one feed message ("level" is handled outside the store — see levels.ts). */
@@ -97,6 +103,8 @@ interface NexusStore extends NexusData {
   setConnection: (connection: Connection, retryAt?: number | null) => void
   setDemo: (demo: boolean) => void
   setBrowserVoice: (v: NexusData['browserVoice']) => void
+  setContinuous: (on: boolean) => void
+  setMqtt: (m: NexusData['mqtt']) => void
 }
 
 export const useNexus = create<NexusStore>()((set) => ({
@@ -105,6 +113,8 @@ export const useNexus = create<NexusStore>()((set) => ({
   setConnection: (connection, retryAt = null) => set({ connection, retryAt }),
   setDemo: (demo) => set({ demo }),
   setBrowserVoice: (browserVoice) => set({ browserVoice }),
+  setContinuous: (continuous) => set({ continuous }),
+  setMqtt: (mqtt) => set({ mqtt }),
 }))
 
 /** What the AI Core shows: a lost feed always wins, so the UI never pretends to be connected. */

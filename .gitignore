@@ -20,6 +20,7 @@ voice/models/
 
 # UNO Q controller secret (lives only on the board)
 unoq/app/python/token.txt
+unoq/app/python/mqtt.json
 
 # Node relay
 relay/node_modules/

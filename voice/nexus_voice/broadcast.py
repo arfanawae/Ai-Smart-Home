@@ -17,7 +17,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import hmac
 import json
+import os
+from urllib.parse import parse_qs, urlsplit
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Any
@@ -141,10 +144,12 @@ class EventBroadcaster:
             self._devices[event.result.device_id] = event.result.reported.to_dict()
         self._broadcast(json.dumps(message, ensure_ascii=False))
 
-    def publish_speak(self, text: str, language: str) -> None:
-        """A reply for the dashboard to read aloud with the browser's own (free) speech synthesis."""
-        if text.strip():
-            self._broadcast(json.dumps({"type": "speak", "text": text, "lang": language}, ensure_ascii=False))
+    def publish_speak(self, text: str, language: str, end: bool = False) -> None:
+        """End of a dashboard voice turn: what to read aloud (browser speech synthesis, free) — possibly
+        nothing — and whether the user ended the conversation. Always sent, so a dashboard in
+        continuous-listening mode knows when to listen again."""
+        message = {"type": "speak", "text": text.strip(), "lang": language, "end": end}
+        self._broadcast(json.dumps(message, ensure_ascii=False))
 
     def publish_level(self, rms: float, source: str, bands: list[float] | None = None) -> None:
         """Loudness 0–1 of the mic ("mic") or of NEXUS's own voice ("tts"), optionally with per-band
@@ -180,7 +185,20 @@ class EventBroadcaster:
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
 
+    def _authorised(self, ws: ServerConnection) -> bool:
+        """NEXUS_WEB_TOKEN set (e.g. when the dashboard is reachable through a tunnel): every client must
+        connect with ?token=<the same value>. Unset: open, as on a laptop that only listens on 127.0.0.1."""
+        expected = os.getenv("NEXUS_WEB_TOKEN", "").strip()
+        if not expected:
+            return True
+        query = parse_qs(urlsplit(ws.request.path if ws.request else "").query)
+        given = (query.get("token") or [""])[0]
+        return hmac.compare_digest(given.encode(), expected.encode())
+
     async def _handle(self, ws: ServerConnection) -> None:
+        if not self._authorised(ws):
+            await ws.close(4401, "unauthorized: open the dashboard with ?token=<NEXUS_WEB_TOKEN>")
+            return
         queue: asyncio.Queue[str] = asyncio.Queue(CLIENT_QUEUE_SIZE)
         queue.put_nowait(self._hello_message())
         self._clients[ws] = queue

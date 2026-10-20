@@ -30,8 +30,8 @@ export function Logo() {
 
 export function TopBar() {
   const now = useClock()
-  const { connection, info, devices, demo, activity } = useNexus()
-  const rows = systemRows(connection, info, devices.main_light, demo)
+  const { connection, info, devices, demo, activity, mqtt } = useNexus()
+  const rows = systemRows(connection, info, devices.main_light, demo, mqtt)
   const problems = activity.filter((c) => c.status !== 'succeeded').length
 
   return (

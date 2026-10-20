@@ -3,7 +3,28 @@ import { speakReply } from './browserVoice'
 import { pushLevel } from './levels'
 import type { ClientMsg, FeedMsg } from './protocol'
 
-export const FEED_URL: string = import.meta.env.VITE_NEXUS_WS ?? 'ws://127.0.0.1:8765'
+// Same origin as the page: Vite forwards /nexus-ws to NEXUS (ws://127.0.0.1:8765). That works on the
+// laptop and through an HTTPS tunnel (Cloudflare) from a phone — where 127.0.0.1 would be the phone
+// itself, and a plain ws:// from an https:// page would be blocked as mixed content.
+// A ?token=… in the page URL is remembered and sent along (NEXUS_WEB_TOKEN on the backend).
+export const FEED_URL: string = import.meta.env.VITE_NEXUS_WS ?? sameOriginFeed()
+
+function sameOriginFeed(): string {
+  if (typeof window === 'undefined') return 'ws://127.0.0.1:8765'
+  const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const token = rememberToken()
+  return `${scheme}//${window.location.host}/nexus-ws${token ? `?token=${encodeURIComponent(token)}` : ''}`
+}
+
+function rememberToken(): string | null {
+  const fromUrl = new URLSearchParams(window.location.search).get('token')
+  try {
+    if (fromUrl) localStorage.setItem('nexus-token', fromUrl)
+    return fromUrl ?? localStorage.getItem('nexus-token')
+  } catch {
+    return fromUrl // private mode: storage unavailable
+  }
+}
 const BACKOFF_S = [1, 2, 4, 8, 16, 30]
 
 let socket: WebSocket | null = null
@@ -19,7 +40,7 @@ function handle(raw: string): void {
     return
   }
   if (msg.type === 'level') pushLevel(msg.rms, msg.source, msg.bands)
-  else if (msg.type === 'speak') speakReply(msg.text, msg.lang)
+  else if (msg.type === 'speak') speakReply(msg.text, msg.lang, msg.end)
   else useNexus.getState().apply(msg)
 }
 

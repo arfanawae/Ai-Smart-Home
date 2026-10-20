@@ -11,6 +11,7 @@ import { SystemPanel } from './components/panels/SystemPanel'
 import { HudPanel } from './components/ui/HudPanel'
 import { demoParams, startDemo } from './lib/demo'
 import { startFeed } from './lib/feed'
+import { startMqtt } from './lib/mqttLight'
 
 /**
  * Desktop (≥1280): Device + System | AI Core | Conversation, Activity across the bottom (Blueprint §4).
@@ -89,7 +90,13 @@ export default function App() {
 
   useEffect(() => {
     const { enabled, frozen } = demoParams()
-    return enabled ? startDemo(frozen) : startFeed()
+    if (enabled) return startDemo(frozen)
+    const stopFeed = startFeed()
+    const stopMqtt = startMqtt() // no-op unless VITE_MQTT_TOPIC is set
+    return () => {
+      stopFeed()
+      stopMqtt()
+    }
   }, [])
 
   useEffect(() => {

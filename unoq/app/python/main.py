@@ -60,6 +60,16 @@ class Link:
         self._last_problem = None
         self.mcu_timeout_s = mcu_timeout_s
         self._stuck = None  # a Bridge call that never returned
+        self._mcu_lock = threading.Lock()  # the relay loop and the MQTT thread share the MCU
+        self.on_report = None  # called with every MCU report (the MQTT link publishes it)
+
+    def call_mcu(self, function, *args):
+        """Thread-safe MCU call for other links (MQTT); every result is also passed to on_report."""
+        with self._mcu_lock:
+            report = self._call_mcu(function, *args)
+        if self.on_report and function == "set_led":
+            self.on_report(report)
+        return report
 
     def _say(self, message):
         try:  # a console that cannot print a character must never look like a network failure
@@ -122,7 +132,7 @@ class Link:
         if command.get("action", "set_led") != "set_led" or not 0 <= value <= 100:
             report = {"ok": False, "error": "rejected command %r" % (command,)}
         else:
-            report = self._call_mcu("set_led", str(value))
+            report = self.call_mcu("set_led", str(value))
         report["id"] = command.get("id")
         self._request("POST", "/api/v1/mcu/report", report)
         self._say("command %s: set_led %s -> %s" % (command.get("id"), value, report))
@@ -131,7 +141,7 @@ class Link:
         """Run once; returns how long to sleep before the next step."""
         try:
             if not self.connected:
-                self._request("POST", "/api/v1/mcu/report", self._call_mcu("get_led"))
+                self._request("POST", "/api/v1/mcu/report", self.call_mcu("get_led"))
                 self.connected = True
                 self._last_problem = None
                 self._say("connected to NEXUS relay at %s" % self.base_url)
@@ -160,6 +170,15 @@ if __name__ == "__main__":
 
     link = Link(LAPTOP_URL, read_token(), Bridge.call)
     print("NEXUS link: long-polling %s" % LAPTOP_URL)
+
+    # Optional: commands from the web app through an MQTT broker (mqtt.json next to this file).
+    from mqtt_link import BoardMqtt, load_config
+
+    mqtt_config = load_config()
+    if mqtt_config:
+        mqtt = BoardMqtt(mqtt_config, link)  # also publishes light changes made through the relay
+        mqtt.start()
+        print("NEXUS link: MQTT %s:%d" % (mqtt_config["host"], mqtt_config["port"]))
 
     def loop():
         time.sleep(link.step())

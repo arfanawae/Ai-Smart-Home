@@ -1,5 +1,5 @@
 import type { Tone } from '../components/ui/HudPanel'
-import type { Connection, Info } from '../store/nexus'
+import type { Connection, Info, NexusData } from '../store/nexus'
 import type { LightState } from './protocol'
 
 export interface SystemRow {
@@ -14,7 +14,13 @@ export interface SystemRow {
  * Status of each part of the chain (Blueprint §3.A). Only facts the feed actually reports are shown as
  * connected — parts that do not exist yet say so instead of pretending.
  */
-export function systemRows(connection: Connection, info: Info | null, light: LightState | undefined, demo: boolean): SystemRow[] {
+export function systemRows(
+  connection: Connection,
+  info: Info | null,
+  light: LightState | undefined,
+  demo: boolean,
+  mqtt: NexusData['mqtt'] = 'off',
+): SystemRow[] {
   const open = connection === 'open'
   const feed: SystemRow = demo
     ? { key: 'feed', name: 'NEXUS', tone: 'warn', value: 'โหมดสาธิต (DEMO)', hint: 'ข้อมูลทั้งหมดในหน้านี้สร้างขึ้นเพื่อแสดงผล' }
@@ -51,7 +57,15 @@ export function systemRows(connection: Connection, info: Info | null, light: Lig
       ? { key: 'mcp', name: 'MCP Server', tone: 'ok', value: 'เชื่อมต่อแล้ว · stdio', hint: 'ทุกคำสั่งไปอุปกรณ์ผ่าน MCP Server' }
       : { key: 'mcp', name: 'MCP Server', tone: 'off', value: info?.devicesVia === 'local' ? 'ไม่ได้ใช้ (local)' : 'ไม่ทราบ' },
     boardRow(info, light),
+    ...(mqtt === 'off' ? [] : [mqttRow(mqtt)]),
   ]
+}
+
+function mqttRow(mqtt: NexusData['mqtt']): SystemRow {
+  const row = { key: 'mqtt', name: 'MQTT (ทดลอง)', hint: 'broker สาธารณะ broker.emqx.io — topic สุ่มคือการป้องกันเดียว' }
+  if (mqtt === 'open') return { ...row, tone: 'ok', value: 'เชื่อมต่อแล้ว · สั่งไฟผ่าน broker' }
+  if (mqtt === 'connecting') return { ...row, tone: 'warn', value: 'กำลังเชื่อมต่อ…' }
+  return { ...row, tone: 'bad', value: 'ขาดการเชื่อมต่อ' }
 }
 
 /** The board is what reports the main light's state, so its link is read from that state. */

@@ -16,6 +16,7 @@
     "@fontsource/orbitron": "^5.3.0",
     "@tailwindcss/vite": "^4.3.3",
     "lucide-react": "^1.59.0",
+    "mqtt": "5.16.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "tailwindcss": "^4.3.3",

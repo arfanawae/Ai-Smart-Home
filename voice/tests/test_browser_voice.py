@@ -82,3 +82,31 @@ def test_azure_engine_reads_the_browser_wav():
             return STTResult("ok", "ปิดไฟ", "th-TH", 0.9)
 
     assert asyncio.run(AzureEngine(FakeAzure()).transcribe(wav_bytes())) == Transcript("ปิดไฟ", "th-TH", "azure")
+
+
+def test_every_dashboard_turn_ends_with_a_speak_message(monkeypatch):
+    """Continuous listening resumes on "speak" — so it must arrive even when there is nothing to say."""
+    import dataclasses
+
+    from nexus.config import load_settings as backend_settings
+
+    from nexus_voice.__main__ import Core
+
+    settings = dataclasses.replace(backend_settings(), device_backend="local", device_mode="mock", gemini_api_key=None, groq_api_key=None)
+    core = Core(settings, [])
+    sent: list[dict] = []
+    monkeypatch.setattr(core.broadcaster, "_broadcast", lambda payload: sent.append(json.loads(payload)))
+    monkeypatch.setattr(core, "emit", lambda event: None)
+
+    def speak_after(result):
+        core.cloud_stt = CloudSTT([Engine("fake", result)])
+        sent.clear()
+        asyncio.run(core._browser_voice(wav_bytes()))
+        return [m for m in sent if m["type"] == "speak"]
+
+    reply = speak_after(Transcript("เปิดไฟ", "th-TH", "fake"))
+    assert len(reply) == 1 and "เปิดไฟ" in reply[0]["text"] and reply[0]["end"] is False
+    assert speak_after(Transcript("", "th-TH", "fake")) == [{"type": "speak", "text": "", "lang": "th-TH", "end": False}]
+    assert speak_after(TranscriptionError("no network"))[0]["text"] == ""
+    bye = speak_after(Transcript("ขอบคุณครับ", "th-TH", "fake"))
+    assert bye[0]["end"] is True and bye[0]["text"]  # says goodbye, then the page stops listening

@@ -3,8 +3,8 @@ import { useNexus } from '../../store/nexus'
 import { HudPanel, StatusDot } from '../ui/HudPanel'
 
 export function SystemPanel({ delay = 0 }: { delay?: number }) {
-  const { connection, info, devices, demo } = useNexus()
-  const rows = systemRows(connection, info, devices.main_light, demo)
+  const { connection, info, devices, demo, mqtt } = useNexus()
+  const rows = systemRows(connection, info, devices.main_light, demo, mqtt)
   return (
     <HudPanel title="System Status" delay={delay}>
       <ul className="flex flex-col gap-2.5 text-sm">
