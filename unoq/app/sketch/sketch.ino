@@ -7,19 +7,21 @@
 // Both are registered with Bridge.provide_safe(): they run inside loop(), not on the RPC thread,
 // which is required for anything that touches pins.
 //
-// M5 first step: the on-board LED. LIGHT_PIN changes to the MOSFET gate pin later (and that pin
-// must support PWM — check the UNO Q pinout; it is not the same as the classic UNO's 3/5/6/9/10/11).
+// M5: a common-anode RGB LED on D9 (later the MOSFET gate for the MR16 — also a PWM pin).
 
 #include <Arduino_RouterBridge.h>
 
-const int LIGHT_PIN = LED_BUILTIN;  // on-board LED for the first test
+// Common-anode RGB LED, one colour channel on D9 (through a resistor). The common anode goes to
+// 3.3 V — NOT 5 V: the MCU's pins are 3.3 V, so with the anode on 5 V a pin at 3.3 V ("off") still
+// leaves ~1.7 V across the LED and it glows faintly at 0 %.
+const int LIGHT_PIN = 9;
 // Set true ONLY for a pin the UNO Q pinout lists as PWM. analogWrite on a pin without PWM can fault
 // the MCU, which then stops answering the Bridge (light stuck in its last state until Stop/Run).
 // While false, any level 1-100 turns the pin fully on; the level is still kept and reported.
-const bool LIGHT_CAN_DIM = false;
+const bool LIGHT_CAN_DIM = true;  // D9 is a PWM (~) pin on the UNO header — confirm on the UNO Q pinout
 // Some boards wire the on-board LED so that LOW = lit. If the LED is ON when NEXUS says off (and
 // OFF when it says on), set this to true.
-const bool LIGHT_ACTIVE_LOW = false;
+const bool LIGHT_ACTIVE_LOW = true;  // common anode: the pin sinks current, LOW = lit
 
 bool lightOn = false;
 int brightness = 100;  // last level, kept while off (same model as NEXUS)
