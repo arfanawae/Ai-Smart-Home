@@ -72,13 +72,36 @@ def build_assistant(settings: Settings, emit: EventSink = print_event) -> tuple[
         gateway = McpDevices()
     else:
         gateway = DeviceService(MockDriver())
-    llm: LLMProvider | None = None
+    llm = build_llm(settings)
+    quota = QuotaTracker(settings.data_dir / "llm_usage.json", settings.llm_daily_limit)
+    return Assistant(gateway, llm, quota, emit), gateway
+
+
+def build_llm(settings: Settings, warn=lambda m: print(f"{YELLOW}⚠ {m}{RESET}", file=sys.stderr)) -> LLMProvider | None:
+    """VOICE_PROVIDER picks which LLM is tried first; the other one (if it has a key) is the fallback."""
+    gemini: LLMProvider | None = None
+    groq: LLMProvider | None = None
     if settings.gemini_api_key:
         from .llm.gemini import GeminiProvider
 
-        llm = GeminiProvider(settings.gemini_api_key, settings.llm_model, settings.llm_timeout_s)
-    quota = QuotaTracker(settings.data_dir / "llm_usage.json", settings.llm_daily_limit)
-    return Assistant(gateway, llm, quota, emit), gateway
+        gemini = GeminiProvider(settings.gemini_api_key, settings.llm_model, settings.llm_timeout_s)
+    if settings.groq_api_key:
+        from .llm.groq import GroqProvider
+
+        groq = GroqProvider(settings.groq_api_key, settings.groq_model, settings.llm_timeout_s)
+    primary, secondary = (groq, gemini) if settings.voice_provider == "groq" else (gemini, groq)
+    wanted = settings.voice_provider
+    if primary is None and secondary is not None:
+        warn(f"VOICE_PROVIDER={wanted} แต่ไม่มี {wanted.upper()}_API_KEY ใน backend/.env — ใช้ {secondary.provider} แทน")
+        return secondary
+    if primary is None:
+        warn("ยังไม่มีทั้ง GEMINI_API_KEY และ GROQ_API_KEY — ใช้ได้เฉพาะคำสั่งตรง ๆ (fast path)")
+        return None
+    if secondary is None:
+        return primary
+    from .llm.fallback import FallbackLLM
+
+    return FallbackLLM(primary, secondary)
 
 
 async def set_mock_failure(gateway: DeviceGateway, mode: str) -> bool:

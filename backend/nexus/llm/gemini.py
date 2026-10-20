@@ -26,7 +26,7 @@ class GeminiProvider:
 
     @staticmethod
     def _to_content(message: ChatMessage) -> types.Content:
-        if message.raw is not None:
+        if isinstance(message.raw, types.Content):  # Gemini's own message (thought signatures); not one from Groq
             return message.raw
         if message.role == "user":
             return types.Content(role="user", parts=[types.Part(text=message.text)])

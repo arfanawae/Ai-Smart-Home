@@ -12,6 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from . import fastpath, replies
+from .banner import provider_banner
 from .devices.models import CommandResult, CommandStatus, LightState
 from .devices.gateway import DeviceGateway
 from .events import AIState, AssistantReply, CommandUpdate, EventSink, StateChanged
@@ -158,6 +159,12 @@ class Assistant:
 
     async def _handle(self, text: str, language: Language, speaker: _Speaker) -> TurnResult:
         decision = fastpath.decide(text)
+        active = getattr(self.llm, "active", self.llm)  # FallbackLLM: the provider it will try first
+        provider_banner(
+            active.provider if active else None,
+            active.model if active else None,
+            "fast path (no AI call needed)" if decision.execute else "AI request" if active else "no AI key: fast path only",
+        )
         if decision.execute:
             turn = await self._fast_path(text, decision, language, speaker)
         else:
@@ -203,10 +210,12 @@ class Assistant:
         if self.llm is None:
             self._state(AIState.ERROR, "ยังไม่ได้ตั้งค่า Gemini")
             return TurnResult("system", messages["no_llm"])
-        if (wait := self.quota.paused_for) > 0 and not self.quota.exhausted:
+        # With a second provider behind it, a paused/exhausted primary is FallbackLLM's business.
+        has_fallback = getattr(self.llm, "secondary", None) is not None
+        if not has_fallback and (wait := self.quota.paused_for) > 0 and not self.quota.exhausted:
             self._state(AIState.ERROR, "เรียก AI ถี่เกินไป")
             return TurnResult("system", messages["rate_limit"].format(seconds=max(1, round(wait))))
-        if not self.quota.can_request():
+        if not has_fallback and not self.quota.can_request():
             self._state(AIState.ERROR, "โควตาหมด")
             reset = f"{self.quota.next_reset_local():%H:%M}"
             return TurnResult("system", messages["quota"].format(reset=reset))
